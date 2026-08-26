@@ -10,6 +10,8 @@ Remplace [echavet/ezo-orp](https://github.com/echavet/ezo-orp) (gelé).
 
 Home Assistant **2026.5+** (`serialx`).
 
+L’icône s’affiche dans **Paramètres → Appareils et services** (`brand/` local, HA 2026.3+). Dans **HACS**, « Icon not available » est un [bug HACS connu](https://github.com/hacs/integration/issues/5223) : HACS interroge encore `brands.home-assistant.io` au lieu du brand local. L’`icon.png` à la racine du dépôt est bien fourni.
+
 ## Installation (HACS)
 
 1. HACS → Custom repositories → `https://github.com/echavet/ezo-complete` → Integration
