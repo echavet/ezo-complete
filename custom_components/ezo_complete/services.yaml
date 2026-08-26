@@ -1,0 +1,52 @@
+send_command:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: ezo_complete
+    command:
+      required: true
+      selector:
+        text:
+
+factory_reset:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: ezo_complete
+    confirm:
+      required: true
+      selector:
+        boolean:
+
+export_calibration:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: ezo_complete
+
+import_calibration:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: ezo_complete
+    payload:
+      required: true
+      selector:
+        text:
+          multiline: true
+
+restore_calibration:
+  fields:
+    device_id:
+      required: true
+      selector:
+        device:
+          integration: ezo_complete

@@ -1,0 +1,110 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EZO Complete",
+        "description": "Sélectionnez le port série USB. L'intégration envoie `i` et n'accepte que les circuits pH ou ORP.",
+        "data": { "port": "Port série", "baudrate": "Débit", "name": "Nom" }
+      },
+      "usb_confirm": {
+        "title": "EZO Complete détecté",
+        "description": "USB {serial} sur {port} identifié comme {kind} (firmware {firmware}).",
+        "data": { "name": "Nom" }
+      },
+      "reconfigure": {
+        "title": "Reconfigurer EZO Complete",
+        "data": { "port": "Port série", "baudrate": "Débit", "name": "Nom" }
+      }
+    },
+    "error": {
+      "cannot_connect": "Impossible d'ouvrir le port série ou le circuit n'a pas répondu",
+      "not_supported": "Ce périphérique n'est pas un circuit Atlas EZO pH ou ORP",
+      "unknown": "Erreur inattendue pendant la vérification"
+    },
+    "abort": {
+      "already_configured": "Ce stick EZO Complete est déjà configuré",
+      "not_supported": "Ce périphérique USB n'est pas un circuit Atlas EZO pH ou ORP",
+      "cannot_connect": "Impossible de communiquer avec le périphérique USB",
+      "reconfigure_successful": "Reconfiguration réussie"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options EZO Complete",
+        "data": {
+          "update_interval": "Intervalle de polling (secondes)",
+          "continuous_on_start": "Mode continu au démarrage",
+          "continuous_interval": "Période des lectures continues (secondes)",
+          "temperature_entity": "Sonde de température (compensation pH)"
+        },
+        "data_description": {
+          "temperature_entity": "Capteur HA utilisé pour envoyer T,<celsius> au circuit pH. Vide = 25 °C (défaut puce)."
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "orp": { "name": "ORP" },
+      "ph": { "name": "pH" },
+      "compensation_temperature": { "name": "Température de compensation" },
+      "slope": { "name": "Pente de calibration" },
+      "status_reason": {
+        "name": "Raison du dernier reset",
+        "state": {
+          "power": "Mise sous tension",
+          "software": "Reset logiciel",
+          "brownout": "Brownout",
+          "watchdog": "Watchdog",
+          "unknown": "Inconnue"
+        }
+      },
+      "status_voltage": { "name": "Tension d'alimentation" },
+      "calibration_state": { "name": "Calibration" },
+      "calibration_export": { "name": "Export de calibration" },
+      "firmware": { "name": "Firmware" }
+    },
+    "switch": {
+      "continuous": { "name": "Mode continu" },
+      "led": { "name": "LED" },
+      "extended_scale": { "name": "Échelle étendue" }
+    },
+    "button": {
+      "calibrate_225": { "name": "Calibrer 225 mV" },
+      "calibrate_custom": { "name": "Calibrer la valeur personnalisée" },
+      "calibrate_mid": { "name": "Calibrer mid (pH 7)" },
+      "calibrate_low": { "name": "Calibrer low (pH 4)" },
+      "calibrate_high": { "name": "Calibrer high (pH 10)" },
+      "calibrate_clear": { "name": "Effacer la calibration" },
+      "find": { "name": "Trouver l'appareil" },
+      "sleep": { "name": "Veille" },
+      "export_calibration": { "name": "Exporter la calibration" },
+      "restore_calibration": { "name": "Restaurer la dernière calibration" },
+      "factory_reset": { "name": "Reset usine" }
+    },
+    "number": {
+      "calibration_value": { "name": "Valeur de calibration personnalisée" },
+      "ph_mid": { "name": "Valeur mid" },
+      "ph_low": { "name": "Valeur low" },
+      "ph_high": { "name": "Valeur high" },
+      "continuous_interval": { "name": "Intervalle du mode continu" }
+    },
+    "text": { "device_name": { "name": "Nom de l'appareil" } }
+  },
+  "services": {
+    "send_command": { "name": "Envoyer une commande", "description": "Commande UART EZO brute sans CR." },
+    "factory_reset": { "name": "Reset usine", "description": "Exige confirm: true." },
+    "export_calibration": { "name": "Exporter la calibration", "description": "Dump Atlas : archive datée + fichier restore." },
+    "import_calibration": { "name": "Importer la calibration", "description": "Coller un dump Atlas." },
+    "restore_calibration": { "name": "Restaurer la dernière calibration", "description": "Lit le fichier .import_calibration de cet appareil." }
+  },
+  "exceptions": {
+    "not_connected": { "message": "Le stick EZO Complete n'est pas connecté" },
+    "command_failed": { "message": "La commande {command} a échoué : {error}" },
+    "unknown_device": { "message": "Appareil EZO Complete inconnu" },
+    "factory_not_confirmed": { "message": "Le reset usine exige confirm: true" },
+    "import_empty": { "message": "Les données d'import sont vides" },
+    "restore_missing": { "message": "Pas de fichier de restore à {path}. Exportez d'abord." }
+  }
+}

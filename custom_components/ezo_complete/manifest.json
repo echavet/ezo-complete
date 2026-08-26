@@ -1,0 +1,31 @@
+{
+  "domain": "ezo_complete",
+  "name": "EZO Complete",
+  "codeowners": ["@echavet"],
+  "config_flow": true,
+  "dependencies": ["usb"],
+  "documentation": "https://github.com/echavet/ezo-complete",
+  "integration_type": "device",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/echavet/ezo-complete/issues",
+  "loggers": ["custom_components.ezo_complete"],
+  "requirements": ["serialx>=1.0.0"],
+  "usb": [
+    {
+      "vid": "0403",
+      "pid": "6015",
+      "known_devices": ["Atlas Scientific EZO Complete"]
+    },
+    {
+      "vid": "0403",
+      "pid": "6001",
+      "known_devices": ["Atlas Scientific EZO Complete (FT232R)"]
+    },
+    {
+      "vid": "0403",
+      "pid": "6014",
+      "known_devices": ["Atlas Scientific EZO Complete (FT232H)"]
+    }
+  ],
+  "version": "2026.8.26"
+}

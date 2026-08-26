@@ -1,0 +1,41 @@
+{
+  "entity": {
+    "sensor": {
+      "orp": { "default": "mdi:sine-wave" },
+      "ph": { "default": "mdi:ph" },
+      "compensation_temperature": { "default": "mdi:thermometer" },
+      "slope": { "default": "mdi:chart-line" },
+      "status_reason": { "default": "mdi:restart-alert" },
+      "status_voltage": { "default": "mdi:flash" },
+      "calibration_state": { "default": "mdi:tune-vertical" },
+      "calibration_export": { "default": "mdi:export" },
+      "firmware": { "default": "mdi:chip" }
+    },
+    "switch": {
+      "continuous": { "default": "mdi:sync" },
+      "led": { "default": "mdi:led-on" },
+      "extended_scale": { "default": "mdi:arrow-expand-horizontal" }
+    },
+    "button": {
+      "calibrate_225": { "default": "mdi:target" },
+      "calibrate_custom": { "default": "mdi:target-variant" },
+      "calibrate_mid": { "default": "mdi:numeric-7-circle" },
+      "calibrate_low": { "default": "mdi:numeric-4-circle" },
+      "calibrate_high": { "default": "mdi:numeric-9-plus-circle" },
+      "calibrate_clear": { "default": "mdi:restore" },
+      "find": { "default": "mdi:map-marker-radius" },
+      "sleep": { "default": "mdi:sleep" },
+      "export_calibration": { "default": "mdi:export" },
+      "restore_calibration": { "default": "mdi:import" },
+      "factory_reset": { "default": "mdi:factory" }
+    },
+    "number": {
+      "calibration_value": { "default": "mdi:gauge" },
+      "ph_mid": { "default": "mdi:gauge" },
+      "ph_low": { "default": "mdi:gauge" },
+      "ph_high": { "default": "mdi:gauge" },
+      "continuous_interval": { "default": "mdi:timer-outline" }
+    },
+    "text": { "device_name": { "default": "mdi:rename-box" } }
+  }
+}
