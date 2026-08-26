@@ -14,6 +14,7 @@
     "switch": {
       "continuous": { "default": "mdi:sync" },
       "led": { "default": "mdi:led-on" },
+      "sleep": { "default": "mdi:sleep" },
       "extended_scale": { "default": "mdi:arrow-expand-horizontal" }
     },
     "button": {
@@ -24,7 +25,6 @@
       "calibrate_high": { "default": "mdi:numeric-9-plus-circle" },
       "calibrate_clear": { "default": "mdi:restore" },
       "find": { "default": "mdi:map-marker-radius" },
-      "sleep": { "default": "mdi:sleep" },
       "export_calibration": { "default": "mdi:export" },
       "restore_calibration": { "default": "mdi:import" },
       "factory_reset": { "default": "mdi:factory" }

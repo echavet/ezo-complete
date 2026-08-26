@@ -68,6 +68,7 @@
     "switch": {
       "continuous": { "name": "Continuous mode" },
       "led": { "name": "LED" },
+      "sleep": { "name": "Sleep" },
       "extended_scale": { "name": "Extended scale" }
     },
     "button": {
@@ -78,7 +79,6 @@
       "calibrate_high": { "name": "Calibrate high (pH 10)" },
       "calibrate_clear": { "name": "Clear calibration" },
       "find": { "name": "Find device" },
-      "sleep": { "name": "Sleep" },
       "export_calibration": { "name": "Export calibration" },
       "restore_calibration": { "name": "Restore last calibration" },
       "factory_reset": { "name": "Factory reset" }

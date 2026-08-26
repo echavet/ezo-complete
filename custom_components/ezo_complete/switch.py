@@ -42,6 +42,14 @@ SWITCHES: tuple[EzoSwitchEntityDescription, ...] = (
         turn_off_fn=lambda c: c.async_set_led(False),
     ),
     EzoSwitchEntityDescription(
+        key="sleep",
+        translation_key="sleep",
+        entity_category=EntityCategory.CONFIG,
+        is_on_fn=lambda s: s.sleeping,
+        turn_on_fn=lambda c: c.async_set_sleeping(True),
+        turn_off_fn=lambda c: c.async_set_sleeping(False),
+    ),
+    EzoSwitchEntityDescription(
         key="extended_scale",
         translation_key="extended_scale",
         entity_category=EntityCategory.DIAGNOSTIC,

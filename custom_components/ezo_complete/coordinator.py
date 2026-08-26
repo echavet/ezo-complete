@@ -250,11 +250,21 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 await self._command(f"C,{interval}", ignore_error=True)
                 await self._command("C,?", ignore_error=True)
 
-    async def async_sleep(self) -> None:
-        await self._command("Sleep")
+    async def async_set_sleeping(self, enabled: bool) -> None:
+        """Sleep is assumed-state: Atlas has no Sleep,? query."""
+        if enabled:
+            await self._command("Sleep")
+            state = self.data.copy()
+            state.sleeping = True
+            self.async_set_updated_data(state)
+            return
+        await self.session.wake()
         state = self.data.copy()
-        state.sleeping = True
+        state.sleeping = False
         self.async_set_updated_data(state)
+        await self._command("Status", ignore_error=True)
+        if not self.data.continuous:
+            await self._command("R", ignore_error=True)
 
     async def async_find(self) -> None:
         await self._command("Find")
@@ -546,7 +556,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 if self._pause_listen or not self.session.connected:
                     await asyncio.sleep(0.2)
                     continue
-                if self.data.continuous is False:
+                if self.data.sleeping or self.data.continuous is False:
                     await asyncio.sleep(0.5)
                     continue
                 lines = await self.session.listen(0.4)
@@ -570,6 +580,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             self._raw_history.append(line.raw)
             if line.kind is LineKind.READING and line.value is not None:
                 state.reading = line.value
+                state.sleeping = False
             elif line.kind is LineKind.QUERY:
                 self._apply_query(state, line)
             elif line.status_code == "SL":

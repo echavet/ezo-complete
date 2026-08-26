@@ -69,12 +69,6 @@ BUTTONS: tuple[EzoButtonEntityDescription, ...] = (
         press_fn=lambda c: c.async_find(),
     ),
     EzoButtonEntityDescription(
-        key="sleep",
-        translation_key="sleep",
-        entity_category=EntityCategory.CONFIG,
-        press_fn=lambda c: c.async_sleep(),
-    ),
-    EzoButtonEntityDescription(
         key="export_calibration",
         translation_key="export_calibration",
         entity_category=EntityCategory.DIAGNOSTIC,
