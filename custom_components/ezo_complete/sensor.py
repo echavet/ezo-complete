@@ -51,7 +51,15 @@ SENSORS: tuple[EzoSensorEntityDescription, ...] = (
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
         value_fn=lambda s: s.reading,
-        extra_fn=lambda s: {"cal_points": s.cal_points, "extended_scale": s.extended_scale},
+        extra_fn=lambda s: {
+            "source": s.reading_source,
+            "stable": s.reading_stable,
+            "span": s.reading_span,
+            "min": s.reading_min,
+            "max": s.reading_max,
+            "cal_points": s.cal_points,
+            "extended_scale": s.extended_scale,
+        },
     ),
     EzoSensorEntityDescription(
         key="ph",
@@ -62,6 +70,11 @@ SENSORS: tuple[EzoSensorEntityDescription, ...] = (
         suggested_display_precision=3,
         value_fn=lambda s: s.reading,
         extra_fn=lambda s: {
+            "source": s.reading_source,
+            "stable": s.reading_stable,
+            "span": s.reading_span,
+            "min": s.reading_min,
+            "max": s.reading_max,
             "cal_points": s.cal_points,
             "temperature": s.temperature,
             "slope_acid": s.slope_acid,

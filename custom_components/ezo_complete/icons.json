@@ -1,5 +1,8 @@
 {
   "entity": {
+    "binary_sensor": {
+      "reading_stable": { "default": "mdi:wave", "state": { "on": "mdi:check-circle", "off": "mdi:wave" } }
+    },
     "sensor": {
       "orp": { "default": "mdi:sine-wave" },
       "ph": { "default": "mdi:ph" },

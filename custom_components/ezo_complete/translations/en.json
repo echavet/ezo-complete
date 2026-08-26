@@ -45,6 +45,9 @@
     }
   },
   "entity": {
+    "binary_sensor": {
+      "reading_stable": { "name": "Reading stable" }
+    },
     "sensor": {
       "orp": { "name": "ORP" },
       "ph": { "name": "pH" },

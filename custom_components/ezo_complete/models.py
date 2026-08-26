@@ -34,6 +34,11 @@ class EzoDeviceState:
     port: str | None = None
     baudrate: int | None = None
     serial_number: str | None = None
+    reading_min: float | None = None
+    reading_max: float | None = None
+    reading_span: float | None = None
+    reading_stable: bool = False
+    reading_source: str | None = None  # "factory" | "calibrated"
 
     def copy(self) -> EzoDeviceState:
         return EzoDeviceState(
@@ -64,4 +69,9 @@ class EzoDeviceState:
             port=self.port,
             baudrate=self.baudrate,
             serial_number=self.serial_number,
+            reading_min=self.reading_min,
+            reading_max=self.reading_max,
+            reading_span=self.reading_span,
+            reading_stable=self.reading_stable,
+            reading_source=self.reading_source,
         )

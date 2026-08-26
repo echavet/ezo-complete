@@ -15,12 +15,18 @@ DEFAULT_PH_LOW = 4.0
 DEFAULT_PH_HIGH = 10.0
 
 PLATFORMS: list[str] = [
+    "binary_sensor",
     "button",
     "number",
     "sensor",
     "switch",
     "text",
 ]
+
+STABILITY_WINDOW_S = 10.0
+STABILITY_MIN_SAMPLES = 5
+PH_STABLE_SPAN = 0.05
+ORP_STABLE_SPAN = 5.0
 
 CONF_SERIAL_NUMBER = "serial_number"
 CONF_BAUDRATE = "baudrate"

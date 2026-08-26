@@ -275,6 +275,32 @@ def parse_slope(response: EzoResponse | str) -> tuple[str, ...] | None:
     return line.query_args
 
 
+# Atlas dump rows are hex; ORP checksum can be only 4 chars (e.g. 9E6B).
+_EXPORT_HEX = re.compile(r"^[0-9A-Fa-f]{4,}$")
+
+
+def is_export_data_line(line: str) -> bool:
+    """True for an Atlas calibration dump row (hex), not ?EXPORT or *OK."""
+    text = line.strip()
+    if not text or text.startswith("*") or text.startswith("?"):
+        return False
+    return _EXPORT_HEX.fullmatch(text) is not None
+
+
+def compact_export_dump(lines: list[str]) -> list[str]:
+    """Keep a single Export cycle; drop query lines and accidental repeats."""
+    data = [line.strip() for line in lines if is_export_data_line(line)]
+    if not data:
+        return []
+    first = data[0]
+    cycle = [first]
+    for line in data[1:]:
+        if line == first:
+            break
+        cycle.append(line)
+    return cycle
+
+
 def parse_export_count(response: EzoResponse | str) -> int | None:
     line = _query_line(response, "export")
     if line is None or not line.query_args:

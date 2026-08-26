@@ -64,6 +64,44 @@ def test_profiles() -> None:
     assert not orp.OrpProfile().supports_temperature
 
 
+def test_compact_export_dump_orp_short_checksum() -> None:
+    dump = """
+00CB213F0100
+9E6B
+00CB213F0100
+9E6B
+00CB213F0100
+9E6B
+""".strip().splitlines()
+    assert codec.compact_export_dump(dump) == ["00CB213F0100", "9E6B"]
+
+
+def test_compact_export_dump_strips_repeats() -> None:
+    dump = """
+0040B1C6A8D3
+22C3793F3DC3
+010101000080
+400000E040F6
+282041000529
+0040B1C6A8D3
+22C3793F3DC3
+010101000080
+400000E040F6
+282041000529
+0040B1C6A8D3
+22C3793F3DC3
+010101000080
+""".strip().splitlines()
+    cycle = codec.compact_export_dump(dump)
+    assert cycle == [
+        "0040B1C6A8D3",
+        "22C3793F3DC3",
+        "010101000080",
+        "400000E040F6",
+        "282041000529",
+    ]
+
+
 def test_usb_name() -> None:
     assert codec.is_usb_product_name("FT230X Basic UART")
     assert codec.resolve_display_name(

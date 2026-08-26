@@ -27,6 +27,8 @@ from .codec import (
     parse_cal_points,
     parse_continuous,
     parse_device_info,
+    compact_export_dump,
+    is_export_data_line,
     parse_export_count,
     parse_flag,
     parse_led,
@@ -55,7 +57,11 @@ from .const import (
     DOMAIN,
     FACTORY_ARM_SECONDS,
     IMPORT_CALIBRATION_SUFFIX,
+    ORP_STABLE_SPAN,
+    PH_STABLE_SPAN,
     RAW_LINE_HISTORY,
+    STABILITY_MIN_SAMPLES,
+    STABILITY_WINDOW_S,
     RECONNECT_DELAY,
     RESPONSE_CODE_ENABLE_COMMANDS,
     STALE_WAKE_SECONDS,
@@ -103,6 +109,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self.pending_ph_mid = DEFAULT_PH_MID
         self.pending_ph_low = DEFAULT_PH_LOW
         self.pending_ph_high = DEFAULT_PH_HIGH
+        self._reading_window: deque[tuple[float, float]] = deque()
 
     @property
     def unique_id(self) -> str:
@@ -310,21 +317,28 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             await self._command("C,0", ignore_error=True)
             first = await self._command("Export")
             count = parse_export_count(first)
-            chunks: list[str] = []
-            for line in first.raw_lines:
-                if not line.startswith("*"):
-                    chunks.append(line)
-            remaining = count if count is not None else 12
-            for _ in range(max(remaining, 0) + 2):
+            raw_chunks: list[str] = list(first.raw_lines)
+            remaining = count if count is not None else 8
+            for _ in range(max(remaining, 0) + 1):
                 response = await self._command("Export", ignore_error=True)
                 if not response.raw_lines:
                     break
-                for line in response.raw_lines:
-                    if not line.startswith("*"):
-                        chunks.append(line)
+                raw_chunks.extend(response.raw_lines)
                 if response.query("export") and parse_export_count(response) == 0:
                     break
-            payload = "\n".join(chunks).strip()
+                cycle = compact_export_dump(raw_chunks)
+                if count is not None and len(cycle) >= count:
+                    break
+                if count is None and len(cycle) >= 2:
+                    # Wrapped: first hex line appeared again.
+                    data_lines = [
+                        line.strip()
+                        for line in raw_chunks
+                        if is_export_data_line(line)
+                    ]
+                    if data_lines.count(cycle[0]) > 1:
+                        break
+            payload = "\n".join(compact_export_dump(raw_chunks)).strip()
             if not payload:
                 raise HomeAssistantError(
                     translation_domain=DOMAIN,
@@ -371,7 +385,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         return str(archive), str(restore)
 
     async def async_import_calibration(self, payload: str) -> None:
-        lines = [line.strip() for line in payload.splitlines() if line.strip()]
+        lines = compact_export_dump(payload.splitlines())
+        if not lines:
+            lines = [line.strip() for line in payload.splitlines() if line.strip()]
         if not lines:
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="import_empty"
@@ -581,18 +597,41 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             if line.kind is LineKind.READING and line.value is not None:
                 state.reading = line.value
                 state.sleeping = False
+                self._update_stability(state, line.value)
             elif line.kind is LineKind.QUERY:
                 self._apply_query(state, line)
             elif line.status_code == "SL":
                 state.sleeping = True
             elif line.status_code == "WA":
                 state.sleeping = False
+        state.reading_source = "calibrated" if state.cal_points else "factory"
         state.last_raw = lines[-1].raw
         state.last_lines = list(self._raw_history)
         state.factory_armed = time.monotonic() <= self._factory_armed_until
         if last_command and last_command.split(",", 1)[0].lower() != "sleep":
             state.sleeping = False
         self.async_set_updated_data(state)
+
+    def _update_stability(self, state: EzoDeviceState, value: float) -> None:
+        now = time.monotonic()
+        self._reading_window.append((now, value))
+        cutoff = now - STABILITY_WINDOW_S
+        while self._reading_window and self._reading_window[0][0] < cutoff:
+            self._reading_window.popleft()
+        values = [sample for _, sample in self._reading_window]
+        if not values:
+            state.reading_min = None
+            state.reading_max = None
+            state.reading_span = None
+            state.reading_stable = False
+            return
+        state.reading_min = min(values)
+        state.reading_max = max(values)
+        state.reading_span = state.reading_max - state.reading_min
+        threshold = PH_STABLE_SPAN if self.profile.kind == "ph" else ORP_STABLE_SPAN
+        state.reading_stable = (
+            len(values) >= STABILITY_MIN_SAMPLES and state.reading_span <= threshold
+        )
 
     def _apply_query(self, state: EzoDeviceState, line: ParsedLine) -> None:
         key = (line.query_key or "").lower()
