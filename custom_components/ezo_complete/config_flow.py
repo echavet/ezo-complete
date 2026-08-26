@@ -300,7 +300,11 @@ class EzoCompleteOptionsFlow(OptionsFlow):
             ),
         }
         kind = (self.config_entry.data.get(CONF_DEVICE_TYPE) or "").lower()
-        if kind == "ph":
+        try:
+            profile = profile_for(kind)
+        except ValueError:
+            profile = None
+        if profile is not None and profile.supports_temperature:
             schema[
                 vol.Optional(
                     CONF_TEMPERATURE_ENTITY,

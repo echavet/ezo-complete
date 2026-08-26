@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import ProbeProfile
+from .base import CalSlot, ProbeProfile
 from .orp import OrpProfile
 from .ph import PhProfile
 

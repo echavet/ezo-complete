@@ -119,34 +119,65 @@ class EzoResponse:
         return None
 
 
-_ACK_ONLY_VERBS = frozenset(
-    {
-        "c",
-        "l",
-        "find",
-        "sleep",
-        "factory",
-        "name",
-        "ok",
-        "o",
-        "response",
-        "orpext",
-        "phext",
-        "cal",
-        "t",
-    }
-)
+class ReplyKind(StrEnum):
+    """What a command is expected to produce on the UART."""
+
+    NONE = "none"  # listen / drain: never complete early
+    SILENT = "silent"  # Sleep: no reply
+    ACK = "ack"  # *OK or empty (response codes off)
+    QUERY = "query"  # ?Key,…
+    READING = "reading"  # numeric R
+    EXPORT = "export"  # hex slice or ?EXPORT,n
+
+
+def expected_reply(command: str | None) -> ReplyKind:
+    if not command:
+        return ReplyKind.NONE
+    verb, _, arg = command.partition(",")
+    verb = verb.strip().lower()
+    arg = arg.strip()
+    if verb == "sleep":
+        return ReplyKind.SILENT
+    if verb == "r":
+        return ReplyKind.READING
+    if verb == "export":
+        return ReplyKind.EXPORT
+    if arg == "?":
+        return ReplyKind.QUERY
+    return ReplyKind.ACK
+
+
+def reply_is_complete(lines: list[ParsedLine], command: str | None) -> bool:
+    kind = expected_reply(command)
+    if kind in {ReplyKind.NONE, ReplyKind.SILENT}:
+        return False
+    for line in lines:
+        if line.kind is LineKind.STATUS and line.status_code in {"OK", "ER", "OV", "UV"}:
+            return True
+        if kind is ReplyKind.READING and line.kind is LineKind.READING:
+            return True
+        if kind is ReplyKind.EXPORT and line.kind is not LineKind.STATUS:
+            return True
+        if kind is ReplyKind.QUERY and line.kind is LineKind.QUERY:
+            return True
+    return False
 
 
 def command_succeeded(response: EzoResponse) -> bool:
     if response.error_code:
         return False
-    if response.ok:
+    kind = expected_reply(response.command)
+    if kind is ReplyKind.SILENT:
         return True
-    verb, _, arg = response.command.partition(",")
-    if arg.strip() == "?":
-        return False
-    return verb.strip().lower() in _ACK_ONLY_VERBS
+    if kind is ReplyKind.ACK:
+        return response.ok or not response.lines
+    if kind is ReplyKind.QUERY:
+        return response.query() is not None
+    if kind is ReplyKind.READING:
+        return response.first_reading() is not None
+    if kind is ReplyKind.EXPORT:
+        return bool(response.raw_lines)
+    return response.ok
 
 
 def encode_command(command: str) -> bytes:
@@ -345,8 +376,6 @@ def resolve_display_name(
 def unique_id_from_serial(serial_number: str | None, device_type: str) -> str:
     serial = (serial_number or "unknown").strip() or "unknown"
     kind = (device_type or "unknown").strip().lower() or "unknown"
-    if kind == "ph":
-        kind = "ph"
     return f"{serial}_{kind}"
 
 

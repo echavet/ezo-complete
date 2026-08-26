@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
 import logging
 import time
 
@@ -13,9 +12,12 @@ from .codec import (
     EzoResponse,
     LineKind,
     ParsedLine,
+    ReplyKind,
     encode_command,
+    expected_reply,
     parse_device_info,
     parse_line,
+    reply_is_complete,
 )
 from .const import (
     COMMAND_TIMEOUT,
@@ -26,7 +28,6 @@ from .const import (
 )
 
 _LOGGER = logging.getLogger(__name__)
-_NO_REPLY = {"sleep"}
 _REBOOT = {"factory"}
 
 
@@ -135,7 +136,7 @@ class SerialSession:
         drain_s = 0.5 if lowered in {"c", "i", "factory"} else 0.05
         await self._drain_unlocked(drain_s)
         await self._write_unlocked(encode_command(name))
-        if lowered in _NO_REPLY:
+        if expected_reply(name) is ReplyKind.SILENT:
             return EzoResponse(command=name)
         lines = await self._read_lines_unlocked(timeout, command=name)
         if lowered in _REBOOT:
@@ -181,7 +182,7 @@ class SerialSession:
             lines.append(parsed)
             self.last_rx_at = time.monotonic()
             _LOGGER.debug("EZO %s << %s", self.port, text)
-            if _is_terminal(lines, command):
+            if reply_is_complete(lines, command):
                 if parsed.kind is not LineKind.STATUS:
                     extra = await self._read_one_unlocked(0.15)
                     if extra is not None:
@@ -210,22 +211,6 @@ class SerialSession:
             self._connected = False
             raise EzoClientError("Serial port is not open")
         return serial
-
-
-def _is_terminal(lines: Iterable[ParsedLine], command: str | None = None) -> bool:
-    if not command:
-        return False
-    verb = command.split(",", 1)[0].lower()
-    for line in lines:
-        if line.kind is LineKind.STATUS and line.status_code in {"OK", "ER", "OV", "UV"}:
-            return True
-        if verb == "r" and line.kind is LineKind.READING:
-            return True
-        if verb == "export" and line.kind is not LineKind.STATUS:
-            return True
-        if verb != "r" and line.kind is LineKind.QUERY:
-            return True
-    return False
 
 
 async def probe_ezo(

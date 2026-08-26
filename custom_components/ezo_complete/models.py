@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 
 @dataclass(slots=True)
@@ -41,37 +41,4 @@ class EzoDeviceState:
     reading_source: str | None = None  # "factory" | "calibrated"
 
     def copy(self) -> EzoDeviceState:
-        return EzoDeviceState(
-            kind=self.kind,
-            reading=self.reading,
-            continuous=self.continuous,
-            continuous_interval=self.continuous_interval,
-            led=self.led,
-            cal_points=self.cal_points,
-            firmware=self.firmware,
-            device_type=self.device_type,
-            device_name=self.device_name,
-            status_reason=self.status_reason,
-            status_reason_code=self.status_reason_code,
-            status_voltage=self.status_voltage,
-            extended_scale=self.extended_scale,
-            temperature=self.temperature,
-            slope_acid=self.slope_acid,
-            slope_base=self.slope_base,
-            sleeping=self.sleeping,
-            last_raw=self.last_raw,
-            last_lines=list(self.last_lines),
-            export_data=self.export_data,
-            export_at=self.export_at,
-            export_path=self.export_path,
-            restore_path=self.restore_path,
-            factory_armed=self.factory_armed,
-            port=self.port,
-            baudrate=self.baudrate,
-            serial_number=self.serial_number,
-            reading_min=self.reading_min,
-            reading_max=self.reading_max,
-            reading_span=self.reading_span,
-            reading_stable=self.reading_stable,
-            reading_source=self.reading_source,
-        )
+        return replace(self, last_lines=list(self.last_lines))

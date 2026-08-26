@@ -23,7 +23,6 @@ class EzoSwitchEntityDescription(SwitchEntityDescription):
     is_on_fn: Callable[[EzoDeviceState], bool | None]
     turn_on_fn: Callable[[EzoCoordinator], Awaitable[None]]
     turn_off_fn: Callable[[EzoCoordinator], Awaitable[None]]
-    kinds: frozenset[str] | None = None
 
 
 SWITCHES: tuple[EzoSwitchEntityDescription, ...] = (
@@ -67,12 +66,7 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    kind = coordinator.profile.kind
-    async_add_entities(
-        EzoSwitch(coordinator, desc)
-        for desc in SWITCHES
-        if desc.kinds is None or kind in desc.kinds
-    )
+    async_add_entities(EzoSwitch(coordinator, desc) for desc in SWITCHES)
 
 
 class EzoSwitch(EzoEntity, SwitchEntity):

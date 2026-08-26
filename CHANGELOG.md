@@ -2,6 +2,19 @@
 
 Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch increments for hotfixes — not the calendar day). First release of this repo was `2026.8.26`; hotfixes are `2026.8.26.1`, `.2`, …
 
+## [2026.8.26.4] - 2026-08-26
+
+### Changed
+
+- Calibration slots, reading sensor, extra diagnostics (pH slope / T) and probe-specific UART queries live on the probe profile. No pH/ORP `if` in platforms or coordinator I/O.
+- Cal / Export / Import / Factory share `hold_stream()` (`C,0`, pause listen, restore stream).
+- One `expected_reply` model (silent Sleep, ack, query, reading, export).
+- pH compensation `T,<°C>` is sent only when the HA temperature moves by ≥ 0.1 °C (reset after identify / factory).
+
+### Added
+
+- `StabilityWindow` and `ExportStore` extracted from the coordinator.
+
 ## [2026.8.26.3] - 2026-08-26
 
 ### Fixed
@@ -32,7 +45,7 @@ Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch i
 - pH: mid/low/high calibration, slope, temperature compensation from a HA sensor entity.
 - Dated calibration archives + per-device restore file.
 
-[2026.8.26.3]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.3
+[2026.8.26.4]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.4
 [2026.8.26.3]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.3
 [2026.8.26.2]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.2
 [2026.8.26.1]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.1

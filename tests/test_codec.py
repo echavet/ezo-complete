@@ -30,9 +30,12 @@ def _load(name: str, path: Path):
 
 const = _load("ezo_complete.const", PKG / "const.py")
 codec = _load("ezo_complete.codec", PKG / "codec.py")
+models = _load("ezo_complete.models", PKG / "models.py")
 base = _load("ezo_complete.profiles.base", PKG / "profiles" / "base.py")
 orp = _load("ezo_complete.profiles.orp", PKG / "profiles" / "orp.py")
 ph = _load("ezo_complete.profiles.ph", PKG / "profiles" / "ph.py")
+stability = _load("ezo_complete.stability", PKG / "stability.py")
+export_store = _load("ezo_complete.export_store", PKG / "export_store.py")
 
 
 def test_identify_orp_and_ph() -> None:
@@ -107,3 +110,117 @@ def test_usb_name() -> None:
     assert codec.resolve_display_name(
         ezo_name=None, configured="FT230X Basic UART", fallback="EZO pH"
     ) == "EZO pH"
+
+
+def test_expected_reply() -> None:
+    assert codec.expected_reply(None) is codec.ReplyKind.NONE
+    assert codec.expected_reply("Sleep") is codec.ReplyKind.SILENT
+    assert codec.expected_reply("R") is codec.ReplyKind.READING
+    assert codec.expected_reply("Export") is codec.ReplyKind.EXPORT
+    assert codec.expected_reply("C,?") is codec.ReplyKind.QUERY
+    assert codec.expected_reply("Cal,?") is codec.ReplyKind.QUERY
+    assert codec.expected_reply("Cal,225") is codec.ReplyKind.ACK
+    assert codec.expected_reply("Cal,mid,7.00") is codec.ReplyKind.ACK
+    assert codec.expected_reply("C,0") is codec.ReplyKind.ACK
+
+
+def test_command_succeeded_silent_and_ack() -> None:
+    assert codec.command_succeeded(codec.EzoResponse(command="Sleep"))
+    assert codec.command_succeeded(codec.EzoResponse(command="Find", lines=[]))
+    export = codec.EzoResponse(
+        command="Export",
+        lines=[codec.parse_line("00CB213F0100")],
+    )
+    assert codec.command_succeeded(export)
+
+
+def test_reply_is_complete_export_checksum() -> None:
+    hex_line = codec.parse_line("00CB213F0100")
+    checksum = codec.parse_line("9E6B")
+    assert codec.reply_is_complete([hex_line], "Export")
+    assert codec.reply_is_complete([checksum], "Export")
+    assert not codec.reply_is_complete([], "Export")
+    assert not codec.reply_is_complete([hex_line], None)
+
+
+def test_compact_export_dump_orp_uart_cycle() -> None:
+    """One Export cycle as seen on UART: query, hex, 4-char checksum, then wrap."""
+    dump = [
+        "?EXPORT,2",
+        "00CB213F0100",
+        "*OK",
+        "9E6B",
+        "*OK",
+        "?EXPORT,0",
+        "00CB213F0100",
+        "9E6B",
+    ]
+    assert codec.compact_export_dump(dump) == ["00CB213F0100", "9E6B"]
+    assert codec.parse_export_count("?EXPORT,2") == 2
+    assert codec.parse_export_count("?EXPORT,0") == 0
+    assert codec.is_export_data_line("9E6B")
+    assert not codec.is_export_data_line("?EXPORT,2")
+
+
+def test_profile_cal_slots_and_stability() -> None:
+    orp_profile = orp.OrpProfile()
+    ph_profile = ph.PhProfile()
+    assert {slot.key for slot in orp_profile.cal_slots} == {"225", "custom"}
+    assert {slot.key for slot in ph_profile.cal_slots} == {"mid", "low", "high"}
+    assert orp_profile.slot("custom").has_number
+    assert not orp_profile.slot("225").has_number
+    assert orp_profile.can_calibrate("225", stable=True, cal_points=0)
+    assert not orp_profile.can_calibrate("225", stable=False, cal_points=0)
+    assert ph_profile.can_calibrate("mid", stable=True, cal_points=0)
+    assert not ph_profile.can_calibrate("low", stable=True, cal_points=0)
+    assert ph_profile.can_calibrate("low", stable=True, cal_points=1)
+    assert ph_profile.can_calibrate("high", stable=True, cal_points=1)
+    assert orp_profile.stability_span == const.ORP_STABLE_SPAN
+    assert ph_profile.stability_span == const.PH_STABLE_SPAN
+    assert orp_profile.extra_diagnostics == ()
+    assert ph_profile.extra_diagnostics == ("temperature", "slope")
+    assert orp_profile.cal_label(0) == "not_calibrated"
+    assert orp_profile.cal_label(1) == "calibrated"
+    assert ph_profile.cal_label(0) == "none"
+    assert ph_profile.cal_label(3) == "three_point"
+
+
+def test_profile_apply_query() -> None:
+    ph_state = models.EzoDeviceState(kind="ph")
+    orp_state = models.EzoDeviceState(kind="orp")
+    ph_profile = ph.PhProfile()
+    orp_profile = orp.OrpProfile()
+    assert ph_profile.apply_query(ph_state, codec.parse_line("?pHext,1"))
+    assert ph_state.extended_scale is True
+    assert ph_profile.apply_query(ph_state, codec.parse_line("?T,25.00"))
+    assert ph_state.temperature == 25.0
+    assert ph_profile.apply_query(ph_state, codec.parse_line("?Slope,99.7,100.3"))
+    assert ph_state.slope_acid == "99.7" and ph_state.slope_base == "100.3"
+    assert not ph_profile.apply_query(ph_state, codec.parse_line("?Cal,1"))
+    assert orp_profile.apply_query(orp_state, codec.parse_line("?ORPext,0"))
+    assert orp_state.extended_scale is False
+    assert not orp_profile.apply_query(orp_state, codec.parse_line("?T,25.00"))
+
+
+def test_stability_window() -> None:
+    window = stability.StabilityWindow(window_s=10.0, min_samples=5, span=5.0)
+    now = 100.0
+    last = None
+    for index in range(5):
+        last = window.push(225.0 + index * 0.1, now + index)
+    assert last is not None and last.stable
+    drifted = window.push(240.0, now + 5)
+    assert not drifted.stable
+    assert drifted.span is not None and drifted.span > 5.0
+
+
+def test_export_store(tmp_path) -> None:
+    from datetime import UTC, datetime
+
+    store = export_store.ExportStore(tmp_path, "abc/def")
+    now = datetime(2026, 8, 26, 12, 0, tzinfo=UTC)
+    archive, restore = store.write("00CB213F0100\n9E6B", now=now)
+    assert archive.endswith("abc_def_calibration_20260826-120000.txt")
+    assert restore.endswith("abc_def.import_calibration")
+    assert store.read_restore() == "00CB213F0100\n9E6B"
+    assert Path(archive).read_text(encoding="ascii") == "00CB213F0100\n9E6B\n"

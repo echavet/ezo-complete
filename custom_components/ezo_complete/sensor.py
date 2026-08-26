@@ -21,6 +21,7 @@ from homeassistant.helpers.typing import StateType
 from .coordinator import EzoCoordinator
 from .entity import EzoEntity
 from .models import EzoDeviceState
+from .profiles import ProbeProfile
 
 PARALLEL_UPDATES = 0
 
@@ -29,122 +30,88 @@ PARALLEL_UPDATES = 0
 class EzoSensorEntityDescription(SensorEntityDescription):
     value_fn: Callable[[EzoDeviceState], StateType]
     extra_fn: Callable[[EzoDeviceState], dict[str, Any]] | None = None
-    kinds: frozenset[str] | None = None
 
 
-def _cal_label(state: EzoDeviceState) -> str | None:
-    if state.cal_points is None:
-        return None
-    if state.kind == "ph":
-        return {0: "none", 1: "one_point", 2: "two_point", 3: "three_point"}.get(
-            state.cal_points, str(state.cal_points)
-        )
-    return "calibrated" if state.cal_points else "not_calibrated"
-
-
-SENSORS: tuple[EzoSensorEntityDescription, ...] = (
-    EzoSensorEntityDescription(
-        key="orp",
-        translation_key="orp",
-        kinds=frozenset({"orp"}),
-        native_unit_of_measurement="mV",
+def _reading_description(profile: ProbeProfile) -> EzoSensorEntityDescription:
+    return EzoSensorEntityDescription(
+        key=profile.reading_key,
+        translation_key=profile.reading_key,
+        native_unit_of_measurement=profile.reading_unit,
         state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=1,
+        suggested_display_precision=profile.reading_precision,
         value_fn=lambda s: s.reading,
-        extra_fn=lambda s: {
-            "source": s.reading_source,
-            "stable": s.reading_stable,
-            "span": s.reading_span,
-            "min": s.reading_min,
-            "max": s.reading_max,
-            "cal_points": s.cal_points,
-            "extended_scale": s.extended_scale,
-        },
-    ),
-    EzoSensorEntityDescription(
-        key="ph",
-        translation_key="ph",
-        kinds=frozenset({"ph"}),
-        native_unit_of_measurement="pH",
-        state_class=SensorStateClass.MEASUREMENT,
-        suggested_display_precision=3,
-        value_fn=lambda s: s.reading,
-        extra_fn=lambda s: {
-            "source": s.reading_source,
-            "stable": s.reading_stable,
-            "span": s.reading_span,
-            "min": s.reading_min,
-            "max": s.reading_max,
-            "cal_points": s.cal_points,
-            "temperature": s.temperature,
-            "slope_acid": s.slope_acid,
-            "slope_base": s.slope_base,
-        },
-    ),
-    EzoSensorEntityDescription(
+        extra_fn=profile.reading_attributes,
+    )
+
+
+EXTRA_DIAGNOSTICS: dict[str, EzoSensorEntityDescription] = {
+    "temperature": EzoSensorEntityDescription(
         key="temperature",
         translation_key="compensation_temperature",
-        kinds=frozenset({"ph"}),
         entity_category=EntityCategory.DIAGNOSTIC,
         device_class=SensorDeviceClass.TEMPERATURE,
         native_unit_of_measurement=UnitOfTemperature.CELSIUS,
         suggested_display_precision=1,
         value_fn=lambda s: s.temperature,
     ),
-    EzoSensorEntityDescription(
+    "slope": EzoSensorEntityDescription(
         key="slope",
         translation_key="slope",
-        kinds=frozenset({"ph"}),
         entity_category=EntityCategory.DIAGNOSTIC,
         value_fn=lambda s: (
             f"{s.slope_acid},{s.slope_base}" if s.slope_acid and s.slope_base else s.slope_acid
         ),
     ),
-    EzoSensorEntityDescription(
-        key="status_reason",
-        translation_key="status_reason",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        device_class=SensorDeviceClass.ENUM,
-        options=["power", "software", "brownout", "watchdog", "unknown"],
-        value_fn=lambda s: s.status_reason,
-        extra_fn=lambda s: {"code": s.status_reason_code},
-    ),
-    EzoSensorEntityDescription(
-        key="status_voltage",
-        translation_key="status_voltage",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        device_class=SensorDeviceClass.VOLTAGE,
-        native_unit_of_measurement=UnitOfElectricPotential.VOLT,
-        suggested_display_precision=3,
-        state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda s: s.status_voltage,
-    ),
-    EzoSensorEntityDescription(
-        key="calibration_state",
-        translation_key="calibration_state",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=_cal_label,
-        extra_fn=lambda s: {"points": s.cal_points, "reading": s.reading},
-    ),
-    EzoSensorEntityDescription(
-        key="calibration_export",
-        translation_key="calibration_export",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda s: s.export_at,
-        extra_fn=lambda s: {
-            "payload": s.export_data,
-            "archive_path": s.export_path,
-            "restore_path": s.restore_path,
-        },
-    ),
-    EzoSensorEntityDescription(
-        key="firmware",
-        translation_key="firmware",
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        value_fn=lambda s: s.firmware,
-    ),
-)
+}
+
+
+def _shared_sensors(coordinator: EzoCoordinator) -> tuple[EzoSensorEntityDescription, ...]:
+    return (
+        EzoSensorEntityDescription(
+            key="status_reason",
+            translation_key="status_reason",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            device_class=SensorDeviceClass.ENUM,
+            options=["power", "software", "brownout", "watchdog", "unknown"],
+            value_fn=lambda s: s.status_reason,
+            extra_fn=lambda s: {"code": s.status_reason_code},
+        ),
+        EzoSensorEntityDescription(
+            key="status_voltage",
+            translation_key="status_voltage",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            device_class=SensorDeviceClass.VOLTAGE,
+            native_unit_of_measurement=UnitOfElectricPotential.VOLT,
+            suggested_display_precision=3,
+            state_class=SensorStateClass.MEASUREMENT,
+            value_fn=lambda s: s.status_voltage,
+        ),
+        EzoSensorEntityDescription(
+            key="calibration_state",
+            translation_key="calibration_state",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda s: coordinator.profile.cal_label(s.cal_points),
+            extra_fn=lambda s: {"points": s.cal_points, "reading": s.reading},
+        ),
+        EzoSensorEntityDescription(
+            key="calibration_export",
+            translation_key="calibration_export",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            value_fn=lambda s: s.export_at,
+            extra_fn=lambda s: {
+                "payload": s.export_data,
+                "archive_path": s.export_path,
+                "restore_path": s.restore_path,
+            },
+        ),
+        EzoSensorEntityDescription(
+            key="firmware",
+            translation_key="firmware",
+            entity_category=EntityCategory.DIAGNOSTIC,
+            entity_registry_enabled_default=False,
+            value_fn=lambda s: s.firmware,
+        ),
+    )
 
 
 async def async_setup_entry(
@@ -153,12 +120,12 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    kind = coordinator.profile.kind
-    async_add_entities(
-        EzoSensor(coordinator, desc)
-        for desc in SENSORS
-        if desc.kinds is None or kind in desc.kinds
-    )
+    profile = coordinator.profile
+    descriptions = [_reading_description(profile)]
+    for key in profile.extra_diagnostics:
+        descriptions.append(EXTRA_DIAGNOSTICS[key])
+    descriptions.extend(_shared_sensors(coordinator))
+    async_add_entities(EzoSensor(coordinator, desc) for desc in descriptions)
 
 
 class EzoSensor(EzoEntity, SensorEntity):

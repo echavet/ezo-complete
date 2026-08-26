@@ -1,4 +1,4 @@
-"""Buttons."""
+"""Buttons: calibration slots come from the probe profile."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DEFAULT_ORP_CALIBRATION
 from .coordinator import EzoCoordinator
 from .entity import EzoEntity
 
@@ -21,46 +20,28 @@ PARALLEL_UPDATES = 0
 @dataclass(frozen=True, kw_only=True)
 class EzoButtonEntityDescription(ButtonEntityDescription):
     press_fn: Callable[[EzoCoordinator], Awaitable[None]]
-    kinds: frozenset[str] | None = None
     available_fn: Callable[[EzoCoordinator], bool] | None = None
 
 
-BUTTONS: tuple[EzoButtonEntityDescription, ...] = (
-    EzoButtonEntityDescription(
-        key="calibrate_225",
-        translation_key="calibrate_225",
-        kinds=frozenset({"orp"}),
-        press_fn=lambda c: c.async_calibrate("custom", DEFAULT_ORP_CALIBRATION),
-        available_fn=lambda c: c.data.reading_stable,
-    ),
-    EzoButtonEntityDescription(
-        key="calibrate_custom",
-        translation_key="calibrate_custom",
-        kinds=frozenset({"orp"}),
-        press_fn=lambda c: c.async_calibrate("custom", c.pending_orp_cal),
-        available_fn=lambda c: c.data.reading_stable,
-    ),
-    EzoButtonEntityDescription(
-        key="calibrate_mid",
-        translation_key="calibrate_mid",
-        kinds=frozenset({"ph"}),
-        press_fn=lambda c: c.async_calibrate("mid", c.pending_ph_mid),
-        available_fn=lambda c: c.data.reading_stable,
-    ),
-    EzoButtonEntityDescription(
-        key="calibrate_low",
-        translation_key="calibrate_low",
-        kinds=frozenset({"ph"}),
-        press_fn=lambda c: c.async_calibrate("low", c.pending_ph_low),
-        available_fn=lambda c: c.data.reading_stable and (c.data.cal_points or 0) >= 1,
-    ),
-    EzoButtonEntityDescription(
-        key="calibrate_high",
-        translation_key="calibrate_high",
-        kinds=frozenset({"ph"}),
-        press_fn=lambda c: c.async_calibrate("high", c.pending_ph_high),
-        available_fn=lambda c: c.data.reading_stable and (c.data.cal_points or 0) >= 1,
-    ),
+def _cal_press(slot: str) -> Callable[[EzoCoordinator], Awaitable[None]]:
+    async def _press(coordinator: EzoCoordinator) -> None:
+        await coordinator.async_calibrate(slot)
+
+    return _press
+
+
+def _cal_available(slot: str) -> Callable[[EzoCoordinator], bool]:
+    def _available(coordinator: EzoCoordinator) -> bool:
+        return coordinator.profile.can_calibrate(
+            slot,
+            stable=bool(coordinator.data.reading_stable),
+            cal_points=coordinator.data.cal_points,
+        )
+
+    return _available
+
+
+SHARED_BUTTONS: tuple[EzoButtonEntityDescription, ...] = (
     EzoButtonEntityDescription(
         key="calibrate_clear",
         translation_key="calibrate_clear",
@@ -99,12 +80,20 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    kind = coordinator.profile.kind
-    async_add_entities(
-        EzoButton(coordinator, desc)
-        for desc in BUTTONS
-        if desc.kinds is None or kind in desc.kinds
-    )
+    entities = [
+        EzoButton(
+            coordinator,
+            EzoButtonEntityDescription(
+                key=slot.button_key,
+                translation_key=slot.button_translation_key,
+                press_fn=_cal_press(slot.key),
+                available_fn=_cal_available(slot.key),
+            ),
+        )
+        for slot in coordinator.profile.cal_slots
+    ]
+    entities.extend(EzoButton(coordinator, desc) for desc in SHARED_BUTTONS)
+    async_add_entities(entities)
 
 
 class EzoButton(EzoEntity, ButtonEntity):

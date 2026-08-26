@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 import logging
 from pathlib import Path
@@ -23,19 +25,16 @@ from .codec import (
     LineKind,
     ParsedLine,
     command_succeeded,
+    compact_export_dump,
+    is_export_data_line,
     is_usb_product_name,
     parse_cal_points,
     parse_continuous,
     parse_device_info,
-    compact_export_dump,
-    is_export_data_line,
     parse_export_count,
-    parse_flag,
     parse_led,
     parse_name,
-    parse_slope,
     parse_status,
-    parse_temperature,
     resolve_display_name,
 )
 from .const import (
@@ -49,26 +48,22 @@ from .const import (
     DEFAULT_BAUDRATE,
     DEFAULT_CONTINUOUS_INTERVAL,
     DEFAULT_CONTINUOUS_ON_START,
-    DEFAULT_ORP_CALIBRATION,
-    DEFAULT_PH_HIGH,
-    DEFAULT_PH_LOW,
-    DEFAULT_PH_MID,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     FACTORY_ARM_SECONDS,
-    IMPORT_CALIBRATION_SUFFIX,
-    ORP_STABLE_SPAN,
-    PH_STABLE_SPAN,
     RAW_LINE_HISTORY,
-    STABILITY_MIN_SAMPLES,
-    STABILITY_WINDOW_S,
     RECONNECT_DELAY,
     RESPONSE_CODE_ENABLE_COMMANDS,
+    STABILITY_MIN_SAMPLES,
+    STABILITY_WINDOW_S,
     STALE_WAKE_SECONDS,
+    TEMPERATURE_PUSH_DELTA,
 )
+from .export_store import ExportStore
 from .models import EzoDeviceState
 from .profiles import ProbeProfile, profile_for
 from .session import EzoClientError, EzoUnsupportedError, SerialSession
+from .stability import StabilityWindow
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -105,11 +100,17 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._raw_history: deque[str] = deque(maxlen=RAW_LINE_HISTORY)
         self._pause_listen = False
         self._last_diag_at = 0.0
-        self.pending_orp_cal = DEFAULT_ORP_CALIBRATION
-        self.pending_ph_mid = DEFAULT_PH_MID
-        self.pending_ph_low = DEFAULT_PH_LOW
-        self.pending_ph_high = DEFAULT_PH_HIGH
-        self._reading_window: deque[tuple[float, float]] = deque()
+        self._last_pushed_t: float | None = None
+        self.cal_setpoints: dict[str, float] = {
+            slot.key: slot.default for slot in self.profile.cal_slots if slot.has_number
+        }
+        self._stability = StabilityWindow(
+            window_s=STABILITY_WINDOW_S,
+            min_samples=STABILITY_MIN_SAMPLES,
+            span=self.profile.stability_span,
+        )
+        slug = (self.unique_id or "probe").replace("/", "_")
+        self._exports = ExportStore(Path(hass.config.path(DOMAIN)), slug)
 
     @property
     def unique_id(self) -> str:
@@ -202,49 +203,80 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         await self._command(f"{cmd},1" if enabled else f"{cmd},0")
         await self._command(f"{cmd},?", ignore_error=True)
 
-    async def async_calibrate(self, slot: str, value: float) -> None:
+    def cal_setpoint(self, slot: str) -> float:
+        spec = self.profile.slot(slot)
+        if spec is not None and spec.fixed_value is not None:
+            return spec.fixed_value
+        if slot in self.cal_setpoints:
+            return self.cal_setpoints[slot]
+        if spec is not None:
+            return spec.default
+        raise KeyError(slot)
+
+    def set_cal_setpoint(self, slot: str, value: float) -> None:
+        self.cal_setpoints[slot] = value
+
+    async def async_calibrate(self, slot: str) -> None:
+        value = self.cal_setpoint(slot)
         command = self.profile.cal_set_command(slot, value)
-        await self._async_run_calibration(command, expect_points=True)
+        await self._async_run_calibration(command)
 
     async def async_calibrate_clear(self) -> None:
-        await self._async_run_calibration("Cal,clear", expect_points=False)
+        await self._async_run_calibration("Cal,clear")
 
-    async def _async_run_calibration(self, cal_command: str, *, expect_points: bool) -> None:
-        resume = self.data.continuous is not False
+    @asynccontextmanager
+    async def _hold_stream(self, *, restore: bool = True) -> AsyncIterator[None]:
+        resume = restore and self.data.continuous is not False
         interval = self.data.continuous_interval or self.configured_continuous_interval
+        held = self._pause_listen
+        self._pause_listen = True
         try:
             await self._command("C,0", ignore_error=True)
             await asyncio.sleep(0.2)
-            await self._async_push_temperature()
-            cal = await self._command(cal_command)
-            if not cal.ok and cal.error_code:
-                raise HomeAssistantError(
-                    translation_domain=DOMAIN,
-                    translation_key="command_failed",
-                    translation_placeholders={"command": cal_command, "error": cal.error_code},
+            yield
+        finally:
+            try:
+                if resume:
+                    await self._command(f"C,{interval}", ignore_error=True)
+                    await self._command("C,?", ignore_error=True)
+            finally:
+                self._pause_listen = held
+
+    async def _async_run_calibration(self, cal_command: str) -> None:
+        try:
+            async with self._hold_stream():
+                await self._async_push_temperature()
+                cal = await self._command(cal_command)
+                if cal.error_code:
+                    raise HomeAssistantError(
+                        translation_domain=DOMAIN,
+                        translation_key="command_failed",
+                        translation_placeholders={
+                            "command": cal_command,
+                            "error": cal.error_code,
+                        },
+                    )
+                query = await self._command("Cal,?")
+                points = parse_cal_points(query)
+                reading = await self._command("R", ignore_error=True)
+                value = reading.first_reading() if reading is not None else self.data.reading
+                state = self.data.copy()
+                if points is not None:
+                    state.cal_points = points
+                if value is not None:
+                    state.reading = value
+                self.async_set_updated_data(state)
+                _LOGGER.info(
+                    "Calibration %s done: Cal,?=%s reading=%s",
+                    cal_command,
+                    points,
+                    value,
                 )
-            query = await self._command("Cal,?")
-            points = parse_cal_points(query)
-            if points is None:
-                points = 1 if expect_points else 0
-            reading = await self._command("R", ignore_error=True)
-            orp_or_ph = reading.first_reading() if reading is not None else self.data.reading
-            state = self.data.copy()
-            state.cal_points = points
-            if orp_or_ph is not None:
-                state.reading = orp_or_ph
-            self.async_set_updated_data(state)
-            _LOGGER.info(
-                "Calibration %s done: Cal,?=%s reading=%s",
-                cal_command,
-                points,
-                orp_or_ph,
-            )
-            self._notify(
-                f"{DOMAIN}_{self.entry.entry_id}_calibrate",
-                "EZO Complete — calibration",
-                f"{cal_command} OK — Cal,?={points}, {self.profile.reading_key}={orp_or_ph}",
-            )
+                self._notify(
+                    f"{DOMAIN}_{self.entry.entry_id}_calibrate",
+                    "EZO Complete — calibration",
+                    f"{cal_command} OK — Cal,?={points}, {self.profile.reading_key}={value}",
+                )
         except HomeAssistantError as err:
             self._notify(
                 f"{DOMAIN}_{self.entry.entry_id}_calibrate",
@@ -252,10 +284,6 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 f"{cal_command} failed: {err}",
             )
             raise
-        finally:
-            if resume:
-                await self._command(f"C,{interval}", ignore_error=True)
-                await self._command("C,?", ignore_error=True)
 
     async def async_set_sleeping(self, enabled: bool) -> None:
         """Sleep is assumed-state: Atlas has no Sleep,? query."""
@@ -292,12 +320,12 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             return
         self._factory_armed_until = 0.0
         try:
-            await self._command("C,0", ignore_error=True)
-            await self._command("Factory", ignore_error=True)
-            await asyncio.sleep(2.5)
-            await self._command("C,0", ignore_error=True)
-            await asyncio.sleep(0.3)
-            await self._initialize_device()
+            async with self._hold_stream(restore=False):
+                await self._command("Factory", ignore_error=True)
+                await asyncio.sleep(2.5)
+                await self._command("C,0", ignore_error=True)
+                await asyncio.sleep(0.3)
+                await self._initialize_device()
         except (EzoUnsupportedError, EzoClientError) as err:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
@@ -311,10 +339,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         )
 
     async def async_export_calibration(self) -> str:
-        resume = self.data.continuous is not False
-        interval = self.data.continuous_interval or self.configured_continuous_interval
-        try:
-            await self._command("C,0", ignore_error=True)
+        async with self._hold_stream():
             first = await self._command("Export")
             count = parse_export_count(first)
             raw_chunks: list[str] = list(first.raw_lines)
@@ -330,7 +355,6 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 if count is not None and len(cycle) >= count:
                     break
                 if count is None and len(cycle) >= 2:
-                    # Wrapped: first hex line appeared again.
                     data_lines = [
                         line.strip()
                         for line in raw_chunks
@@ -345,13 +369,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                     translation_key="command_failed",
                     translation_placeholders={"command": "Export", "error": "empty"},
                 )
-            exported_at = datetime.now(UTC).replace(microsecond=0).isoformat()
-            archive, restore = await self.hass.async_add_executor_job(
-                self._write_export_file, payload
-            )
+            now = datetime.now(UTC).replace(microsecond=0)
+
+            def _write() -> tuple[str, str]:
+                return self._exports.write(payload, now=now)
+
+            archive, restore = await self.hass.async_add_executor_job(_write)
             state = self.data.copy()
             state.export_data = payload
-            state.export_at = exported_at
+            state.export_at = now.isoformat()
             state.export_path = archive
             state.restore_path = restore
             self.async_set_updated_data(state)
@@ -361,28 +387,6 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 f"Archive : {archive}\nRestore : {restore}\n\n{payload}",
             )
             return payload
-        finally:
-            if resume:
-                await self._command(f"C,{interval}", ignore_error=True)
-
-    def _export_folder(self) -> Path:
-        return Path(self.hass.config.path(DOMAIN))
-
-    def _restore_file(self) -> Path:
-        slug = (self.unique_id or "probe").replace("/", "_")
-        return self._export_folder() / f"{slug}.{IMPORT_CALIBRATION_SUFFIX}"
-
-    def _write_export_file(self, payload: str) -> tuple[str, str]:
-        folder = self._export_folder()
-        folder.mkdir(parents=True, exist_ok=True)
-        slug = (self.unique_id or "probe").replace("/", "_")
-        stamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-        archive = folder / f"{slug}_calibration_{stamp}.txt"
-        restore = self._restore_file()
-        text = payload.rstrip() + "\n"
-        archive.write_text(text, encoding="ascii")
-        restore.write_text(text, encoding="ascii")
-        return str(archive), str(restore)
 
     async def async_import_calibration(self, payload: str) -> None:
         lines = compact_export_dump(payload.splitlines())
@@ -392,28 +396,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="import_empty"
             )
-        resume = self.data.continuous is not False
-        interval = self.data.continuous_interval or self.configured_continuous_interval
-        try:
-            await self._command("C,0", ignore_error=True)
+        async with self._hold_stream():
             for line in lines:
                 cmd = line if line.lower().startswith("import") else f"Import,{line}"
                 await self._command(cmd)
             await self._command("Cal,?")
-        finally:
-            if resume:
-                await self._command(f"C,{interval}", ignore_error=True)
 
     async def async_restore_calibration(self) -> str:
-        path = self._restore_file()
-
-        def _read() -> str | None:
-            if not path.is_file():
-                return None
-            text = path.read_text(encoding="ascii", errors="ignore").strip()
-            return text or None
-
-        payload = await self.hass.async_add_executor_job(_read)
+        path = self._exports.restore_path
+        payload = await self.hass.async_add_executor_job(self._exports.read_restore)
         if payload is None:
             raise HomeAssistantError(
                 translation_domain=DOMAIN,
@@ -472,12 +463,29 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 )
             except Exception:  # noqa: BLE001
                 return
+        if (
+            self._last_pushed_t is not None
+            and abs(value - self._last_pushed_t) < TEMPERATURE_PUSH_DELTA
+        ):
+            return
         await self._command(f"T,{value:.2f}", ignore_error=True)
+        self._last_pushed_t = value
         await self._command("T,?", ignore_error=True)
 
     async def _initialize_device(self) -> None:
         info = await self.session.identify()
-        self.profile = profile_for(info.kind)
+        profile = profile_for(info.kind)
+        if profile.kind != self.profile.kind:
+            self.cal_setpoints = {
+                slot.key: slot.default for slot in profile.cal_slots if slot.has_number
+            }
+        self.profile = profile
+        self._stability = StabilityWindow(
+            window_s=STABILITY_WINDOW_S,
+            min_samples=STABILITY_MIN_SAMPLES,
+            span=profile.stability_span,
+        )
+        self._last_pushed_t = None
         state = self.data.copy()
         state.kind = self.profile.kind
         state.device_type = info.device_type
@@ -512,6 +520,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             raise HomeAssistantError(
                 translation_domain=DOMAIN, translation_key="not_connected"
             )
+        held = self._pause_listen
         self._pause_listen = True
         try:
             if cmd.split(",", 1)[0].lower() != "sleep" and self._needs_wake():
@@ -538,7 +547,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 translation_placeholders={"command": cmd, "error": str(err)},
             ) from err
         finally:
-            self._pause_listen = False
+            if not held:
+                self._pause_listen = False
 
         if cmd.split(",", 1)[0].lower() == "sleep":
             return response
@@ -613,27 +623,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self.async_set_updated_data(state)
 
     def _update_stability(self, state: EzoDeviceState, value: float) -> None:
-        now = time.monotonic()
-        self._reading_window.append((now, value))
-        cutoff = now - STABILITY_WINDOW_S
-        while self._reading_window and self._reading_window[0][0] < cutoff:
-            self._reading_window.popleft()
-        values = [sample for _, sample in self._reading_window]
-        if not values:
-            state.reading_min = None
-            state.reading_max = None
-            state.reading_span = None
-            state.reading_stable = False
-            return
-        state.reading_min = min(values)
-        state.reading_max = max(values)
-        state.reading_span = state.reading_max - state.reading_min
-        threshold = PH_STABLE_SPAN if self.profile.kind == "ph" else ORP_STABLE_SPAN
-        state.reading_stable = (
-            len(values) >= STABILITY_MIN_SAMPLES and state.reading_span <= threshold
-        )
+        snap = self._stability.push(value, time.monotonic())
+        state.reading_min = snap.minimum
+        state.reading_max = snap.maximum
+        state.reading_span = snap.span
+        state.reading_stable = snap.stable
 
     def _apply_query(self, state: EzoDeviceState, line: ParsedLine) -> None:
+        if self.profile.apply_query(state, line):
+            return
         key = (line.query_key or "").lower()
         raw = line.raw
         if key == "i":
@@ -665,19 +663,6 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             name = parse_name(raw)
             if name is not None:
                 state.device_name = name
-        elif key in {"orpext", "phext"}:
-            flag = parse_flag(raw, key)
-            if flag is not None:
-                state.extended_scale = flag
-        elif key == "t":
-            temp = parse_temperature(raw)
-            if temp is not None:
-                state.temperature = temp
-        elif key == "slope":
-            slope = parse_slope(raw)
-            if slope:
-                state.slope_acid = slope[0] if slope else None
-                state.slope_base = slope[1] if len(slope) > 1 else None
 
     def _schedule_reconnect(self) -> None:
         if self._reconnect_task and not self._reconnect_task.done():
