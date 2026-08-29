@@ -81,6 +81,7 @@ class ProbeProfile(ABC):
             attrs["temperature"] = state.temperature
             attrs["slope_acid"] = state.slope_acid
             attrs["slope_base"] = state.slope_base
+            attrs["slope_offset"] = state.slope_offset
         return attrs
 
     def apply_query(self, state: EzoDeviceState, line: ParsedLine) -> bool:
@@ -103,6 +104,7 @@ class ProbeProfile(ABC):
             if slope:
                 state.slope_acid = slope[0]
                 state.slope_base = slope[1] if len(slope) > 1 else None
+                state.slope_offset = slope[2] if len(slope) > 2 else None
             return True
         return False
 
@@ -110,4 +112,4 @@ class ProbeProfile(ABC):
         extra = (f"{self.extended_command},?",)
         if self.supports_temperature:
             extra = extra + ("T,?", "Slope,?")
-        return ("C,?", "Cal,?", "L,?", "Status", "Name,?", "i") + extra
+        return ("Cal,?", "L,?", "Status", "Name,?", "i") + extra

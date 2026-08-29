@@ -299,7 +299,7 @@ def parse_temperature(response: EzoResponse | str) -> float | None:
 
 
 def parse_slope(response: EzoResponse | str) -> tuple[str, ...] | None:
-    """``?Slope,99.7,100.3`` acid%, base% (optional offset)."""
+    """``?Slope,99.7,100.3,-0.89`` acid%, base%, optional mid offset mV."""
     line = _query_line(response, "slope")
     if line is None:
         return None

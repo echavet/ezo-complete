@@ -179,6 +179,9 @@ def test_profile_cal_slots_and_stability() -> None:
     assert ph_profile.stability_span == const.PH_STABLE_SPAN
     assert orp_profile.extra_diagnostics == ()
     assert ph_profile.extra_diagnostics == ("temperature", "slope")
+    assert "C,?" not in ph_profile.diagnostic_queries()
+    assert "Slope,?" in ph_profile.diagnostic_queries()
+    assert "Slope,?" not in orp_profile.diagnostic_queries()
     assert orp_profile.cal_label(0) == "not_calibrated"
     assert orp_profile.cal_label(1) == "calibrated"
     assert ph_profile.cal_label(0) == "none"
@@ -196,6 +199,19 @@ def test_profile_apply_query() -> None:
     assert ph_state.temperature == 25.0
     assert ph_profile.apply_query(ph_state, codec.parse_line("?Slope,99.7,100.3"))
     assert ph_state.slope_acid == "99.7" and ph_state.slope_base == "100.3"
+    assert ph_state.slope_offset is None
+    assert ph_state.slope_text == "99.7,100.3"
+    assert ph_profile.apply_query(ph_state, codec.parse_line("?Slope,93.5,81.5,-1.2"))
+    assert ph_state.slope_acid == "93.5"
+    assert ph_state.slope_base == "81.5"
+    assert ph_state.slope_offset == "-1.2"
+    assert ph_state.slope_text == "93.5,81.5,-1.2"
+    assert ph_profile.apply_query(ph_state, codec.parse_line("?Slope,93.5,81.5,0"))
+    assert ph_state.slope_offset == "0"
+    assert ph_state.slope_text == "93.5,81.5,0"
+    assert ph_profile.apply_query(ph_state, codec.parse_line("?Slope,99.7,100.3"))
+    assert ph_state.slope_offset is None
+    assert ph_state.slope_text == "99.7,100.3"
     assert not ph_profile.apply_query(ph_state, codec.parse_line("?Cal,1"))
     assert orp_profile.apply_query(orp_state, codec.parse_line("?ORPext,0"))
     assert orp_state.extended_scale is False

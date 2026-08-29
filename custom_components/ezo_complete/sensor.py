@@ -58,9 +58,12 @@ EXTRA_DIAGNOSTICS: dict[str, EzoSensorEntityDescription] = {
         key="slope",
         translation_key="slope",
         entity_category=EntityCategory.DIAGNOSTIC,
-        value_fn=lambda s: (
-            f"{s.slope_acid},{s.slope_base}" if s.slope_acid and s.slope_base else s.slope_acid
-        ),
+        value_fn=lambda s: s.slope_text,
+        extra_fn=lambda s: {
+            "acid": s.slope_acid,
+            "base": s.slope_base,
+            "offset_mv": s.slope_offset,
+        },
     ),
 }
 

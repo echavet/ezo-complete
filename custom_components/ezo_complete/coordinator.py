@@ -99,6 +99,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._factory_armed_until = 0.0
         self._raw_history: deque[str] = deque(maxlen=RAW_LINE_HISTORY)
         self._pause_listen = False
+        self._hold_lock = asyncio.Lock()
+        self._hold_owner: asyncio.Task[object] | None = None
         self._last_diag_at = 0.0
         self._last_pushed_t: float | None = None
         self.cal_setpoints: dict[str, float] = {
@@ -168,7 +170,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 await self._async_push_temperature()
                 await self._command("R")
             elif time.monotonic() - self._last_diag_at >= 60:
-                await self._refresh_diagnostics()
+                async with self._hold_stream():
+                    await self._refresh_diagnostics()
+                self._last_diag_at = time.monotonic()
         except EzoClientError as err:
             self._schedule_reconnect()
             raise UpdateFailed(str(err)) from err
@@ -226,21 +230,26 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
 
     @asynccontextmanager
     async def _hold_stream(self, *, restore: bool = True) -> AsyncIterator[None]:
+        if self.data.continuous is False or self._hold_owner is asyncio.current_task():
+            yield
+            return
         resume = restore and self.data.continuous is not False
         interval = self.data.continuous_interval or self.configured_continuous_interval
-        held = self._pause_listen
-        self._pause_listen = True
-        try:
-            await self._command("C,0", ignore_error=True)
-            await asyncio.sleep(0.2)
-            yield
-        finally:
+        async with self._hold_lock:
+            self._hold_owner = asyncio.current_task()
+            self._pause_listen = True
             try:
-                if resume:
-                    await self._command(f"C,{interval}", ignore_error=True)
-                    await self._command("C,?", ignore_error=True)
+                await self._command("C,0", ignore_error=True)
+                await asyncio.sleep(0.2)
+                yield
             finally:
-                self._pause_listen = held
+                try:
+                    if resume:
+                        await self._command(f"C,{interval}", ignore_error=True)
+                        await self._command("C,?", ignore_error=True)
+                finally:
+                    self._hold_owner = None
+                    self._pause_listen = False
 
     async def _async_run_calibration(self, cal_command: str) -> None:
         try:
@@ -256,26 +265,23 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                             "error": cal.error_code,
                         },
                     )
-                query = await self._command("Cal,?")
-                points = parse_cal_points(query)
+                await self._refresh_diagnostics()
                 reading = await self._command("R", ignore_error=True)
                 value = reading.first_reading() if reading is not None else self.data.reading
                 state = self.data.copy()
-                if points is not None:
-                    state.cal_points = points
                 if value is not None:
                     state.reading = value
                 self.async_set_updated_data(state)
                 _LOGGER.info(
                     "Calibration %s done: Cal,?=%s reading=%s",
                     cal_command,
-                    points,
+                    state.cal_points,
                     value,
                 )
                 self._notify(
                     f"{DOMAIN}_{self.entry.entry_id}_calibrate",
                     "EZO Complete — calibration",
-                    f"{cal_command} OK — Cal,?={points}, {self.profile.reading_key}={value}",
+                    f"{cal_command} OK — Cal,?={state.cal_points}, {self.profile.reading_key}={value}",
                 )
         except HomeAssistantError as err:
             self._notify(
@@ -468,9 +474,10 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             and abs(value - self._last_pushed_t) < TEMPERATURE_PUSH_DELTA
         ):
             return
-        await self._command(f"T,{value:.2f}", ignore_error=True)
-        self._last_pushed_t = value
-        await self._command("T,?", ignore_error=True)
+        async with self._hold_stream():
+            await self._command(f"T,{value:.2f}", ignore_error=True)
+            self._last_pushed_t = value
+            await self._command("T,?", ignore_error=True)
 
     async def _initialize_device(self) -> None:
         info = await self.session.identify()
@@ -499,6 +506,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             await self._command(
                 f"C,{self.configured_continuous_interval}", ignore_error=True
             )
+        await self._command("C,?", ignore_error=True)
         await self._refresh_diagnostics()
         self._last_diag_at = time.monotonic()
         if not self.data.continuous:

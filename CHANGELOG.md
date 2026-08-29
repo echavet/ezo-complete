@@ -2,6 +2,15 @@
 
 Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch increments for hotfixes — not the calendar day). First release of this repo was `2026.8.26`; hotfixes are `2026.8.26.1`, `.2`, …
 
+## [2026.8.26.5] - 2026-08-29
+
+### Fixed
+
+- pH slope sensor now keeps Atlas's third field (mid-point offset in mV). State is `acid%,base%[,offset_mV]`; attributes `acid` / `base` / `offset_mv`.
+- `Slope,?` is queried right after a pH calibration so the sensor updates without reloading the integration.
+- Periodic diagnostics while `C,n` is running no longer fire on every coordinator tick after 60 s (`_last_diag_at` was never refreshed). They now run at most once a minute, pause the stream (`C,0`) for the query burst, and leave `C,?` out of that burst so the continuous switch does not flicker.
+- pH `T,<°C>` updates no longer write on top of a live continuous stream.
+
 ## [2026.8.26.4] - 2026-08-26
 
 ### Changed
@@ -45,6 +54,7 @@ Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch i
 - pH: mid/low/high calibration, slope, temperature compensation from a HA sensor entity.
 - Dated calibration archives + per-device restore file.
 
+[2026.8.26.5]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.5
 [2026.8.26.4]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.4
 [2026.8.26.3]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.3
 [2026.8.26.2]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.2

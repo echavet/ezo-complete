@@ -23,6 +23,7 @@ class EzoDeviceState:
     temperature: float | None = None
     slope_acid: str | None = None
     slope_base: str | None = None
+    slope_offset: str | None = None
     sleeping: bool = False
     last_raw: str | None = None
     last_lines: list[str] = field(default_factory=list)
@@ -39,6 +40,16 @@ class EzoDeviceState:
     reading_span: float | None = None
     reading_stable: bool = False
     reading_source: str | None = None  # "factory" | "calibrated"
+
+    @property
+    def slope_text(self) -> str | None:
+        """Atlas ``?Slope,acid%,base%[,offset_mV]`` as shown on the sensor."""
+        parts = [
+            part
+            for part in (self.slope_acid, self.slope_base, self.slope_offset)
+            if part is not None
+        ]
+        return ",".join(parts) if parts else None
 
     def copy(self) -> EzoDeviceState:
         return replace(self, last_lines=list(self.last_lines))
