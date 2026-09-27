@@ -2,6 +2,16 @@
 
 Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch increments for hotfixes — not the calendar day). First release of this repo was `2026.8.26`; hotfixes are `2026.8.26.1`, `.2`, …
 
+## [2026.8.26.6] - 2026-09-27
+
+### Fixed
+
+- **Stability gating with slow continuous intervals**: With `C,n` set to ≥3 s, the stability window could never accumulate enough samples (5 required in 10 s) to declare the reading stable, leaving calibration buttons permanently unavailable. The required sample count now adapts to the reading interval: `max(3, min(5, ⌊window/interval⌋+1))`. A 1 s interval still requires 5 samples; a 5 s interval requires only 3.
+
+### Changed
+
+- `reading_stable` binary sensor now exposes additional diagnostic attributes: `samples` (current count in window), `required_samples` (adaptive minimum), and `span_threshold`. This provides clear progress feedback (e.g. "3/3 samples collected, span OK") rather than a fragile countdown that resets on every glitch.
+
 ## [2026.8.26.5] - 2026-08-29
 
 ### Fixed
@@ -54,6 +64,7 @@ Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch i
 - pH: mid/low/high calibration, slope, temperature compensation from a HA sensor entity.
 - Dated calibration archives + per-device restore file.
 
+[2026.8.26.6]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.6
 [2026.8.26.5]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.5
 [2026.8.26.4]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.4
 [2026.8.26.3]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.3

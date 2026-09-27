@@ -55,6 +55,8 @@ from .const import (
     RECONNECT_DELAY,
     RESPONSE_CODE_ENABLE_COMMANDS,
     STABILITY_MIN_SAMPLES,
+    STABILITY_MIN_SAMPLES_CEILING,
+    STABILITY_MIN_SAMPLES_FLOOR,
     STABILITY_WINDOW_S,
     STALE_WAKE_SECONDS,
     TEMPERATURE_PUSH_DELTA,
@@ -110,6 +112,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             window_s=STABILITY_WINDOW_S,
             min_samples=STABILITY_MIN_SAMPLES,
             span=self.profile.stability_span,
+            interval_s=float(self.configured_continuous_interval),
+            min_samples_floor=STABILITY_MIN_SAMPLES_FLOOR,
+            min_samples_ceiling=STABILITY_MIN_SAMPLES_CEILING,
         )
         slug = (self.unique_id or "probe").replace("/", "_")
         self._exports = ExportStore(Path(hass.config.path(DOMAIN)), slug)
@@ -491,6 +496,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             window_s=STABILITY_WINDOW_S,
             min_samples=STABILITY_MIN_SAMPLES,
             span=profile.stability_span,
+            interval_s=float(self.configured_continuous_interval),
+            min_samples_floor=STABILITY_MIN_SAMPLES_FLOOR,
+            min_samples_ceiling=STABILITY_MIN_SAMPLES_CEILING,
         )
         self._last_pushed_t = None
         state = self.data.copy()
@@ -636,6 +644,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         state.reading_max = snap.maximum
         state.reading_span = snap.span
         state.reading_stable = snap.stable
+        state.stability_samples = snap.sample_count
+        state.stability_required = snap.required_samples
+        state.stability_span_threshold = snap.span_threshold
 
     def _apply_query(self, state: EzoDeviceState, line: ParsedLine) -> None:
         if self.profile.apply_query(state, line):
@@ -653,6 +664,10 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             if cont:
                 state.continuous = cont.enabled
                 state.continuous_interval = cont.interval or state.continuous_interval
+                if cont.enabled and cont.interval:
+                    self._stability.set_interval(float(cont.interval))
+                elif not cont.enabled:
+                    self._stability.set_interval(None)
         elif key == "cal":
             points = parse_cal_points(raw)
             if points is not None:
