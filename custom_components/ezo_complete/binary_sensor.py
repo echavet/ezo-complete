@@ -53,10 +53,13 @@ class EzoBinarySensor(EzoEntity, BinarySensorEntity):
         return self.entity_description.is_on_fn(self.coordinator.data)
 
     @property
-    def extra_state_attributes(self) -> dict[str, float | None]:
+    def extra_state_attributes(self) -> dict[str, float | int | None]:
         data = self.coordinator.data
         return {
             "min": data.reading_min,
             "max": data.reading_max,
             "span": data.reading_span,
+            "samples": data.stability_samples,
+            "required_samples": data.stability_required,
+            "span_threshold": data.stability_span_threshold,
         }

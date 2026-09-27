@@ -225,9 +225,102 @@ def test_stability_window() -> None:
     for index in range(5):
         last = window.push(225.0 + index * 0.1, now + index)
     assert last is not None and last.stable
+    assert last.sample_count == 5
+    assert last.required_samples == 5
     drifted = window.push(240.0, now + 5)
     assert not drifted.stable
     assert drifted.span is not None and drifted.span > 5.0
+
+
+def test_compute_min_samples() -> None:
+    """Test the adaptive sample count formula."""
+    from ezo_complete.stability import compute_min_samples
+
+    assert compute_min_samples(10.0, 1.0, floor=3, ceiling=5) == 5
+    assert compute_min_samples(10.0, 2.0, floor=3, ceiling=5) == 5
+    assert compute_min_samples(10.0, 3.0, floor=3, ceiling=5) == 4
+    assert compute_min_samples(10.0, 5.0, floor=3, ceiling=5) == 3
+    assert compute_min_samples(10.0, 10.0, floor=3, ceiling=5) == 3
+    assert compute_min_samples(10.0, 20.0, floor=3, ceiling=5) == 3
+    assert compute_min_samples(10.0, 0.0, floor=3, ceiling=5) == 5
+    assert compute_min_samples(10.0, -1.0, floor=3, ceiling=5) == 5
+
+
+def test_stability_window_fast_interval() -> None:
+    """With 1s interval, requires 5 samples (the ceiling)."""
+    window = stability.StabilityWindow(
+        window_s=10.0, min_samples=5, span=0.05, interval_s=1.0
+    )
+    assert window.required_samples == 5
+    now = 100.0
+    for index in range(4):
+        snap = window.push(7.00, now + index)
+        assert not snap.stable
+        assert snap.sample_count == index + 1
+    snap = window.push(7.00, now + 4)
+    assert snap.stable
+    assert snap.sample_count == 5
+
+
+def test_stability_window_slow_interval() -> None:
+    """With 5s interval, requires only 3 samples (the floor)."""
+    window = stability.StabilityWindow(
+        window_s=10.0, min_samples=5, span=0.05, interval_s=5.0
+    )
+    assert window.required_samples == 3
+    now = 100.0
+    for index in range(2):
+        snap = window.push(7.00, now + index * 5)
+        assert not snap.stable
+        assert snap.sample_count == index + 1
+        assert snap.required_samples == 3
+    snap = window.push(7.00, now + 10)
+    assert snap.stable
+    assert snap.sample_count == 3
+
+
+def test_stability_window_slow_interval_span_breach() -> None:
+    """Span breach resets stability even with slow interval."""
+    window = stability.StabilityWindow(
+        window_s=10.0, min_samples=5, span=0.05, interval_s=5.0
+    )
+    now = 100.0
+    for i in range(3):
+        window.push(7.00, now + i * 5)
+    snap = window.push(7.00, now + 15)
+    assert snap.stable
+    snap = window.push(7.10, now + 20)
+    assert not snap.stable
+    assert snap.span is not None and snap.span > 0.05
+
+
+def test_stability_window_set_interval() -> None:
+    """set_interval dynamically adjusts required samples."""
+    window = stability.StabilityWindow(
+        window_s=10.0, min_samples=5, span=0.05, interval_s=1.0
+    )
+    assert window.required_samples == 5
+    window.set_interval(5.0)
+    assert window.required_samples == 3
+    window.set_interval(None)
+    assert window.required_samples == 5
+    window.set_interval(3.0)
+    assert window.required_samples == 4
+
+
+def test_stability_snapshot_attributes() -> None:
+    """Verify all snapshot attributes are populated."""
+    window = stability.StabilityWindow(
+        window_s=10.0, min_samples=5, span=0.05, interval_s=2.0
+    )
+    snap = window.push(7.00, 100.0)
+    assert snap.minimum == 7.00
+    assert snap.maximum == 7.00
+    assert snap.span == 0.0
+    assert snap.sample_count == 1
+    assert snap.required_samples == 5
+    assert snap.span_threshold == 0.05
+    assert not snap.stable
 
 
 def test_export_store(tmp_path) -> None:

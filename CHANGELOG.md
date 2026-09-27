@@ -2,6 +2,16 @@
 
 Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch increments for hotfixes — not the calendar day). First release of this repo was `2026.8.26`; hotfixes are `2026.8.26.1`, `.2`, …
 
+## [Unreleased]
+
+### Fixed
+
+- **Stability gating with slow continuous intervals**: With `C,n` set to ≥3 s, the stability window could never accumulate enough samples (5 required in 10 s) to declare the reading stable, leaving calibration buttons permanently unavailable. The required sample count now adapts to the reading interval: `max(3, min(5, ⌊window/interval⌋+1))`. A 1 s interval still requires 5 samples; a 5 s interval requires only 3.
+
+### Changed
+
+- `reading_stable` binary sensor now exposes additional diagnostic attributes: `samples` (current count in window), `required_samples` (adaptive minimum), and `span_threshold`.
+
 ## [2026.8.26.5] - 2026-08-29
 
 ### Fixed
