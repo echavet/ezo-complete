@@ -696,19 +696,55 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         )
 
     async def _reconnect_loop(self) -> None:
+        from homeassistant.components import usb
+
+        stored_serial = self.entry.data.get(CONF_SERIAL_NUMBER)
+        attempt = 0
         while True:
             try:
                 await self.session.disconnect()
                 await asyncio.sleep(RECONNECT_DELAY)
+                new_port = await self._find_device_port(stored_serial)
+                if new_port and new_port != self.session.port:
+                    _LOGGER.info(
+                        "USB device moved: %s -> %s", self.session.port, new_port
+                    )
+                    self.session = SerialSession(
+                        port=new_port, baudrate=self.session.baudrate
+                    )
+                    self.hass.config_entries.async_update_entry(
+                        self.entry,
+                        data={**self.entry.data, CONF_PORT: new_port},
+                    )
                 await self.session.connect()
                 await self._initialize_device()
             except asyncio.CancelledError:
                 raise
             except (EzoClientError, OSError, TimeoutError) as err:
-                _LOGGER.debug("Reconnect to %s failed: %s", self.session.port, err)
+                attempt += 1
+                if attempt % 12 == 1:
+                    _LOGGER.debug("Reconnect to %s failed: %s", self.session.port, err)
                 continue
             self._mark_available()
             return
+
+    async def _find_device_port(self, serial: str | None) -> str | None:
+        """Try to find the current port for a USB device by its serial number."""
+        if not serial or serial == "unknown":
+            return None
+        try:
+            from homeassistant.components import usb
+
+            usb_list = usb.async_get_usb(self.hass)
+            for device in usb_list:
+                if device.serial_number == serial:
+                    port = await self.hass.async_add_executor_job(
+                        usb.get_serial_by_id, device.device
+                    )
+                    return port
+        except Exception:  # noqa: BLE001
+            _LOGGER.debug("Could not scan USB devices for serial %s", serial)
+        return None
 
     def _mark_unavailable(self) -> None:
         if not self._unavailable_logged:
