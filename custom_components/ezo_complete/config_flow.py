@@ -1,4 +1,10 @@
-"""Config Flow: USB discovery, identify pH vs ORP, options including T entity."""
+"""Config Flow: USB discovery, identify pH vs ORP, options including T entity.
+
+USB stability improvements (2026.9):
+- Entries created manually without USB serial now match USB rediscovery
+- USB unplug/replug updates the port path without requiring delete/re-add
+- Migration upgrades "unknown" serials to real USB serials when available
+"""
 
 from __future__ import annotations
 
@@ -18,7 +24,7 @@ from homeassistant.config_entries import (
     SOURCE_USB,
 )
 from homeassistant.const import CONF_NAME, CONF_PORT
-from homeassistant.core import callback
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
     BooleanSelector,
     EntitySelector,
@@ -60,8 +66,42 @@ from .session import EzoClientError, EzoUnsupportedError, probe_ezo
 _LOGGER = logging.getLogger(__name__)
 
 
+def _find_entry_by_unknown_serial(
+    hass: HomeAssistant, device_type: str
+) -> ConfigEntry | None:
+    """Find an existing entry with serial_number 'unknown' for the given device_type.
+
+    This allows USB rediscovery to adopt entries created via manual setup.
+    """
+    for entry in hass.config_entries.async_entries(DOMAIN):
+        stored_serial = entry.data.get(CONF_SERIAL_NUMBER) or "unknown"
+        stored_kind = (entry.data.get(CONF_DEVICE_TYPE) or "").lower()
+        if stored_serial == "unknown" and stored_kind == device_type.lower():
+            return entry
+    return None
+
+
+async def _try_get_usb_serial(hass: HomeAssistant, port: str) -> str | None:
+    """Try to extract USB serial from a port path using HA's USB registry.
+
+    Returns the serial number if found, None otherwise.
+    """
+    try:
+        usb_discovery = usb.async_get_usb(hass)
+        for device in usb_discovery:
+            device_path = await hass.async_add_executor_job(
+                usb.get_serial_by_id, device.device
+            )
+            if device_path == port and device.serial_number:
+                return device.serial_number
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Could not extract USB serial for %s", port)
+    return None
+
+
 class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 1
+    VERSION = 2
+    MINOR_VERSION = 1
 
     def __init__(self) -> None:
         self._port: str | None = None
@@ -69,6 +109,7 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
         self._firmware: str | None = None
         self._device_type: str = "orp"
         self._discovery_name: str | None = None
+        self._adopted_entry: ConfigEntry | None = None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -77,7 +118,10 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             port = user_input[CONF_PORT].strip()
             baudrate = int(user_input.get(CONF_BAUDRATE, DEFAULT_BAUDRATE))
-            error = await self._async_validate_and_set_unique_id(port, baudrate)
+            usb_serial = await _try_get_usb_serial(self.hass, port)
+            error = await self._async_validate_and_set_unique_id(
+                port, baudrate, serial_number=usb_serial
+            )
             if error:
                 errors["base"] = error
             else:
@@ -121,10 +165,40 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         if error:
             return self.async_abort(reason=error)
+
         self._discovery_name = profile_for(self._device_type).default_name
-        self._abort_if_unique_id_configured(
-            updates={CONF_PORT: device, CONF_SERIAL_NUMBER: self._serial_number}
+
+        existing = await self.async_set_unique_id(
+            unique_id_from_serial(self._serial_number, self._device_type)
         )
+        if existing is not None:
+            self._abort_if_unique_id_configured(
+                updates={CONF_PORT: device, CONF_SERIAL_NUMBER: self._serial_number}
+            )
+
+        unknown_entry = _find_entry_by_unknown_serial(self.hass, self._device_type)
+        if unknown_entry is not None:
+            _LOGGER.info(
+                "USB discovery adopting entry %s (unknown serial -> %s)",
+                unknown_entry.entry_id,
+                self._serial_number,
+            )
+            self._adopted_entry = unknown_entry
+            new_unique_id = unique_id_from_serial(
+                self._serial_number, self._device_type
+            )
+            self.hass.config_entries.async_update_entry(
+                unknown_entry,
+                unique_id=new_unique_id,
+                data={
+                    **unknown_entry.data,
+                    CONF_PORT: device,
+                    CONF_SERIAL_NUMBER: self._serial_number,
+                },
+            )
+            await self.hass.config_entries.async_reload(unknown_entry.entry_id)
+            return self.async_abort(reason="already_configured")
+
         self.context["title_placeholders"] = {CONF_NAME: self._discovery_name}
         return await self.async_step_usb_confirm()
 

@@ -2,6 +2,32 @@
 
 Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch increments for hotfixes — not the calendar day). First release of this repo was `2026.8.26`; hotfixes are `2026.8.26.1`, `.2`, …
 
+## [2026.9.28] - 2026-09-28
+
+### Fixed
+
+- **USB unplug/replug stability**: Unplugging and replugging the USB cable no longer requires deleting and re-adding the integration. The config entry survives disconnections, and the port path is updated automatically when the device reappears (potentially on a different port).
+
+- **Entity ID stability after reconfigure**: Entity IDs are now preserved when the USB device is reconfigured or reconnected. Previously, delete+re-add could create new entity IDs (e.g. `sensor.ezo_orp_*` → `sensor.ezo_orp_2_*`), breaking dashboards. The fix ensures entity unique IDs remain stable.
+
+- **Manual setup now captures USB serial**: Entries created via manual setup (not USB discovery) now attempt to retrieve the USB serial number from the selected port. This ensures the entry can be matched when USB discovery runs later.
+
+### Added
+
+- **Automatic entry adoption**: When USB discovery finds a device whose entry was created manually (with "unknown" serial), the existing entry is automatically updated with the real USB serial instead of creating a duplicate.
+
+- **Config entry migration (v1 → v2.1)**: Existing entries are automatically migrated to normalize their unique IDs and update entity registry entries. This one-time migration preserves entity IDs for users upgrading from earlier versions.
+
+- **Dynamic port detection**: The reconnect loop now scans USB devices to find if the device has moved to a different port, updating the stored port path automatically.
+
+### Changed
+
+- Config flow version bumped to 2.1 for migration tracking.
+
+### Notes for existing users
+
+After upgrading, your existing entries will be migrated automatically. Entity IDs should remain unchanged. If you previously had to delete and re-add the integration due to USB issues, dashboards referencing old entity IDs will need to be updated once to the new (stable) IDs.
+
 ## [2026.8.26.6] - 2026-09-27
 
 ### Fixed
@@ -64,6 +90,7 @@ Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch i
 - pH: mid/low/high calibration, slope, temperature compensation from a HA sensor entity.
 - Dated calibration archives + per-device restore file.
 
+[2026.9.28]: https://github.com/echavet/ezo-complete/releases/tag/2026.9.28
 [2026.8.26.6]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.6
 [2026.8.26.5]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.5
 [2026.8.26.4]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.4
