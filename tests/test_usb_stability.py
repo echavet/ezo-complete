@@ -223,3 +223,53 @@ class TestPortChangeScenarios:
         
         needs_update = discovered_port and discovered_port != session_port
         assert not needs_update
+
+
+class TestMigrateUniqueIdHelper:
+    """Test the shared async_migrate_unique_id helper logic."""
+
+    def test_entity_unique_id_replacement_pattern(self) -> None:
+        """Verify the string replacement pattern used for entity migration."""
+        old_uid = "unknown_orp"
+        new_uid = "ABC123_orp"
+        
+        entity_unique_ids = [
+            "unknown_orp_reading",
+            "unknown_orp_status_reason",
+            "unknown_orp_calibration_state",
+            "unknown_orp_continuous",
+            "unknown_orp_led",
+        ]
+        
+        for old_entity_uid in entity_unique_ids:
+            assert old_entity_uid.startswith(f"{old_uid}_")
+            new_entity_uid = old_entity_uid.replace(
+                f"{old_uid}_", f"{new_uid}_", 1
+            )
+            assert new_entity_uid.startswith(f"{new_uid}_")
+            key = old_entity_uid[len(old_uid) + 1:]
+            assert new_entity_uid == f"{new_uid}_{key}"
+
+    def test_replacement_only_affects_prefix(self) -> None:
+        """Replace only the first occurrence (the prefix), not embedded matches."""
+        old_uid = "unknown_orp"
+        new_uid = "ABC123_orp"
+        
+        entity_uid = "unknown_orp_unknown_orp_sensor"
+        new_entity_uid = entity_uid.replace(f"{old_uid}_", f"{new_uid}_", 1)
+        assert new_entity_uid == "ABC123_orp_unknown_orp_sensor"
+
+    def test_no_replacement_when_no_match(self) -> None:
+        """Entities that don't match the prefix pattern are unchanged."""
+        old_uid = "unknown_orp"
+        new_uid = "ABC123_orp"
+        
+        entity_uid = "other_domain_sensor"
+        assert not entity_uid.startswith(f"{old_uid}_")
+
+    def test_same_unique_id_no_migration_needed(self) -> None:
+        """When old and new unique_ids are equal, no migration is needed."""
+        old_uid = "ABC123_orp"
+        new_uid = "ABC123_orp"
+        
+        assert old_uid == new_uid

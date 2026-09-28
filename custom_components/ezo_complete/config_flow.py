@@ -66,6 +66,12 @@ from .session import EzoClientError, EzoUnsupportedError, probe_ezo
 _LOGGER = logging.getLogger(__name__)
 
 
+def _get_async_migrate_unique_id():
+    """Lazy import to avoid circular dependency."""
+    from . import async_migrate_unique_id
+    return async_migrate_unique_id
+
+
 def _find_entry_by_unknown_serial(
     hass: HomeAssistant, device_type: str
 ) -> ConfigEntry | None:
@@ -167,26 +173,29 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason=error)
 
         self._discovery_name = profile_for(self._device_type).default_name
+        new_unique_id = unique_id_from_serial(self._serial_number, self._device_type)
 
-        existing = await self.async_set_unique_id(
-            unique_id_from_serial(self._serial_number, self._device_type)
+        self._abort_if_unique_id_configured(
+            updates={CONF_PORT: device, CONF_SERIAL_NUMBER: self._serial_number}
         )
-        if existing is not None:
-            self._abort_if_unique_id_configured(
-                updates={CONF_PORT: device, CONF_SERIAL_NUMBER: self._serial_number}
-            )
 
         unknown_entry = _find_entry_by_unknown_serial(self.hass, self._device_type)
         if unknown_entry is not None:
+            old_unique_id = unknown_entry.unique_id or unique_id_from_serial(
+                "unknown", self._device_type
+            )
             _LOGGER.info(
-                "USB discovery adopting entry %s (unknown serial -> %s)",
+                "USB discovery adopting entry %s (serial: unknown -> %s)",
                 unknown_entry.entry_id,
                 self._serial_number,
             )
             self._adopted_entry = unknown_entry
-            new_unique_id = unique_id_from_serial(
-                self._serial_number, self._device_type
+
+            async_migrate_unique_id = _get_async_migrate_unique_id()
+            async_migrate_unique_id(
+                self.hass, unknown_entry, old_unique_id, new_unique_id
             )
+
             self.hass.config_entries.async_update_entry(
                 unknown_entry,
                 unique_id=new_unique_id,
