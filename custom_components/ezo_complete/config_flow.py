@@ -376,6 +376,11 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_FILTER_WINDOW: DEFAULT_FILTER_WINDOW,
                 CONF_CALIBRATION_INTERVAL: DEFAULT_CALIBRATION_INTERVAL,
                 CONF_STABILITY_WINDOW: DEFAULT_STABILITY_WINDOW,
+                CONF_STABILITY_MAX_SPAN: (
+                    DEFAULT_PH_STABILITY_SPAN_MV
+                    if self._device_type == "ph"
+                    else DEFAULT_ORP_STABILITY_SPAN
+                ),
                 CONF_CALIBRATION_AUTO_RETURN: DEFAULT_CALIBRATION_AUTO_RETURN,
                 CONF_SLEEP: DEFAULT_SLEEP,
             },

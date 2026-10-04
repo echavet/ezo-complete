@@ -97,6 +97,14 @@
           "exploitation": "Exploitation",
           "calibration": "Calibration"
         }
+      },
+      "filter_type": {
+        "name": "Reading filter",
+        "state": {
+          "none": "None (raw)",
+          "median": "Median",
+          "mean": "Mean"
+        }
       }
     },
     "switch": {

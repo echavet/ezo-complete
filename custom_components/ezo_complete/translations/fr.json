@@ -97,6 +97,14 @@
           "exploitation": "Exploitation",
           "calibration": "Calibration"
         }
+      },
+      "filter_type": {
+        "name": "Filtre de lecture",
+        "state": {
+          "none": "Aucun (brut)",
+          "median": "Médiane",
+          "mean": "Moyenne"
+        }
       }
     },
     "switch": {
