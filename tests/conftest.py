@@ -1,33 +1,68 @@
 """Pytest fixtures for EZO Complete unit tests.
 
 This file contains only pure Python fixtures that don't require Home Assistant.
-HA-specific fixtures are in conftest_ha.py (loaded only when HA is available).
+It avoids importing from custom_components to keep CI simple.
 """
 
 from __future__ import annotations
 
 from collections.abc import Generator
+from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.ezo_complete.codec import (
-    DeviceInfoResponse,
-    EzoResponse,
-    LineKind,
-    ParsedLine,
-)
-from custom_components.ezo_complete.const import (
-    CONF_CONTINUOUS_INTERVAL,
-    CONF_MEASUREMENT_INTERVAL,
-    CONF_MODE,
-    DEFAULT_CALIBRATION_INTERVAL,
-    DEFAULT_MEASUREMENT_INTERVAL,
-    DEFAULT_MODE,
-    DOMAIN,
-    MODE_CALIBRATION,
-)
+
+class LineKind(Enum):
+    """Line kind enum for fake responses."""
+    STATUS = auto()
+    QUERY = auto()
+    READING = auto()
+
+
+@dataclass(slots=True)
+class ParsedLine:
+    """Parsed line from EZO response."""
+    raw: str
+    kind: LineKind
+    value: float | None = None
+    query_key: str | None = None
+    status_code: str | None = None
+
+
+@dataclass(slots=True)
+class EzoResponse:
+    """EZO command response."""
+    command: str
+    lines: list[ParsedLine]
+
+    @property
+    def ok(self) -> bool:
+        return any(
+            line.kind is LineKind.STATUS and line.status_code == "OK"
+            for line in self.lines
+        )
+
+    @property
+    def raw_lines(self) -> list[str]:
+        return [line.raw for line in self.lines]
+
+
+@dataclass(slots=True)
+class DeviceInfoResponse:
+    """Device info response."""
+    device_type: str
+    firmware: str
+    raw: str
+
+    @property
+    def kind(self) -> str:
+        token = (self.device_type or "").strip().lower()
+        if token in {"ph", "orp"}:
+            return token
+        return "unknown"
 
 
 class FakeSerialSession:
@@ -196,40 +231,3 @@ class FakeSerialSession:
 def fake_serial_session() -> FakeSerialSession:
     """Create a fake serial session."""
     return FakeSerialSession()
-
-
-@pytest.fixture
-def mock_serial_session(fake_serial_session: FakeSerialSession) -> Generator[MagicMock, None, None]:
-    """Mock SerialSession to use fake session."""
-    with patch(
-        "custom_components.ezo_complete.coordinator.SerialSession",
-        return_value=fake_serial_session,
-    ) as mock:
-        mock.return_value = fake_serial_session
-        yield mock
-
-
-@pytest.fixture
-def mock_probe_ezo(fake_serial_session: FakeSerialSession) -> Generator[AsyncMock, None, None]:
-    """Mock probe_ezo to use fake session identify."""
-    async def _probe(*args, **kwargs):
-        return await fake_serial_session.identify()
-
-    with patch(
-        "custom_components.ezo_complete.session.probe_ezo",
-        side_effect=_probe,
-    ) as mock:
-        yield mock
-
-
-@pytest.fixture
-def mock_config_flow_probe(fake_serial_session: FakeSerialSession) -> Generator[AsyncMock, None, None]:
-    """Mock probe_ezo in config_flow."""
-    async def _probe(*args, **kwargs):
-        return await fake_serial_session.identify()
-
-    with patch(
-        "custom_components.ezo_complete.config_flow.probe_ezo",
-        side_effect=_probe,
-    ) as mock:
-        yield mock
