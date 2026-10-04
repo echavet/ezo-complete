@@ -88,8 +88,37 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     Version 2.1: unique_id normalization for USB serial stability.
     - Ensures unique_id matches the pattern {serial}_{kind}
     - Migrates entity unique_ids if the entry unique_id changes
+
+    Version 3: UX refactor with exploitation/calibration modes.
+    - continuous_on_start, update_interval, continuous_interval -> new options
+    - Adds mode, measurement_interval, filter, stability settings
     """
-    if config_entry.version > 2:
+    from .const import (
+        CONF_CALIBRATION_AUTO_RETURN,
+        CONF_CALIBRATION_INTERVAL,
+        CONF_CONTINUOUS_INTERVAL,
+        CONF_CONTINUOUS_ON_START,
+        CONF_FILTER_TYPE,
+        CONF_FILTER_WINDOW,
+        CONF_MEASUREMENT_INTERVAL,
+        CONF_MODE,
+        CONF_SLEEP,
+        CONF_STABILITY_MAX_SPAN,
+        CONF_STABILITY_WINDOW,
+        CONF_UPDATE_INTERVAL,
+        DEFAULT_CALIBRATION_AUTO_RETURN,
+        DEFAULT_CALIBRATION_INTERVAL,
+        DEFAULT_FILTER_TYPE,
+        DEFAULT_FILTER_WINDOW,
+        DEFAULT_MEASUREMENT_INTERVAL,
+        DEFAULT_MODE,
+        DEFAULT_ORP_STABILITY_SPAN,
+        DEFAULT_PH_STABILITY_SPAN_MV,
+        DEFAULT_SLEEP,
+        DEFAULT_STABILITY_WINDOW,
+    )
+
+    if config_entry.version > 3:
         _LOGGER.warning(
             "Cannot downgrade entry %s from version %s.%s",
             config_entry.entry_id,
@@ -113,6 +142,38 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             unique_id=new_unique_id,
             version=2,
             minor_version=1,
+        )
+
+    if config_entry.version == 2:
+        _LOGGER.info("Migrating entry %s from version 2.x to 3", config_entry.entry_id)
+        old_options = config_entry.options
+        kind = (config_entry.data.get(CONF_DEVICE_TYPE) or "orp").lower()
+
+        old_update_interval = old_options.get(CONF_UPDATE_INTERVAL, 5)
+        old_continuous_interval = old_options.get(CONF_CONTINUOUS_INTERVAL, 1)
+
+        new_options = {
+            CONF_MODE: DEFAULT_MODE,
+            CONF_MEASUREMENT_INTERVAL: max(5, old_update_interval),
+            CONF_FILTER_TYPE: DEFAULT_FILTER_TYPE,
+            CONF_FILTER_WINDOW: DEFAULT_FILTER_WINDOW,
+            CONF_CALIBRATION_INTERVAL: old_continuous_interval,
+            CONF_STABILITY_WINDOW: DEFAULT_STABILITY_WINDOW,
+            CONF_STABILITY_MAX_SPAN: (
+                DEFAULT_PH_STABILITY_SPAN_MV if kind == "ph" else DEFAULT_ORP_STABILITY_SPAN
+            ),
+            CONF_CALIBRATION_AUTO_RETURN: DEFAULT_CALIBRATION_AUTO_RETURN,
+            CONF_SLEEP: DEFAULT_SLEEP,
+        }
+
+        if "temperature_entity" in old_options:
+            new_options["temperature_entity"] = old_options["temperature_entity"]
+
+        hass.config_entries.async_update_entry(
+            config_entry,
+            options=new_options,
+            version=3,
+            minor_version=0,
         )
 
     return True

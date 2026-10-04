@@ -1,4 +1,7 @@
-"""Buttons: calibration slots come from the probe profile."""
+"""Buttons: calibration slots come from the probe profile.
+
+Cal buttons are only available in Calibration mode and when stable.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +14,7 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
+from .const import MODE_CALIBRATION
 from .coordinator import EzoCoordinator
 from .entity import EzoEntity
 
@@ -31,7 +35,11 @@ def _cal_press(slot: str) -> Callable[[EzoCoordinator], Awaitable[None]]:
 
 
 def _cal_available(slot: str) -> Callable[[EzoCoordinator], bool]:
+    """Cal buttons require Calibration mode AND stable reading AND slot prerequisites."""
+
     def _available(coordinator: EzoCoordinator) -> bool:
+        if coordinator.mode != MODE_CALIBRATION:
+            return False
         return coordinator.profile.can_calibrate(
             slot,
             stable=bool(coordinator.data.reading_stable),
@@ -46,6 +54,7 @@ SHARED_BUTTONS: tuple[EzoButtonEntityDescription, ...] = (
         key="calibrate_clear",
         translation_key="calibrate_clear",
         press_fn=lambda c: c.async_calibrate_clear(),
+        available_fn=lambda c: c.mode == MODE_CALIBRATION,
     ),
     EzoButtonEntityDescription(
         key="find",

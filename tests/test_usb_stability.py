@@ -286,7 +286,7 @@ class TestPollingModeStability:
         window = stability.StabilityWindow(
             window_s=10.0,
             min_samples=5,
-            span=0.05,
+            span_threshold_mv=0.05,
             interval_s=5.0,
             min_samples_floor=3,
             min_samples_ceiling=5,
@@ -307,7 +307,7 @@ class TestPollingModeStability:
         window = stability.StabilityWindow(
             window_s=10.0,
             min_samples=5,
-            span=0.05,
+            span_threshold_mv=0.05,
             interval_s=5.0,
             min_samples_floor=3,
             min_samples_ceiling=5,
@@ -327,7 +327,7 @@ class TestPollingModeStability:
         window = stability.StabilityWindow(
             window_s=10.0,
             min_samples=5,
-            span=0.05,
+            span_threshold_mv=0.05,
             interval_s=1.0,
             min_samples_floor=3,
             min_samples_ceiling=5,
@@ -354,7 +354,7 @@ class TestPollingModeStability:
         window = stability.StabilityWindow(
             window_s=10.0,
             min_samples=5,
-            span=0.05,
+            span_threshold_mv=0.05,
             interval_s=None,
             min_samples_floor=3,
             min_samples_ceiling=5,
@@ -366,7 +366,7 @@ class TestPollingModeStability:
         window = stability.StabilityWindow(
             window_s=10.0,
             min_samples=5,
-            span=0.05,
+            span_threshold_mv=0.05,
             interval_s=None,
         )
         

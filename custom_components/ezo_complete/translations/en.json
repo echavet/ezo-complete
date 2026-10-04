@@ -33,14 +33,34 @@
       "init": {
         "title": "EZO Complete options",
         "data": {
-          "update_interval": "Poll interval (seconds)",
-          "continuous_on_start": "Enable continuous mode on startup",
-          "continuous_interval": "Continuous reading period (seconds)",
+          "measurement_interval": "Measurement interval (seconds)",
+          "filter_type": "Reading filter",
+          "filter_window": "Filter window size",
+          "calibration_interval": "Calibration reading interval (seconds)",
+          "stability_window": "Stability window (seconds)",
+          "stability_max_span": "Stability threshold (mV)",
+          "calibration_auto_return": "Auto-return to exploitation (minutes, 0=disabled)",
           "temperature_entity": "Temperature sensor (pH compensation)"
         },
         "data_description": {
+          "measurement_interval": "Polling interval in exploitation mode (5-3600 s).",
+          "filter_type": "Apply median or mean filter to readings in exploitation mode.",
+          "filter_window": "Number of samples for the filter (1-20).",
+          "calibration_interval": "Atlas continuous mode interval C,n (1-99 s).",
+          "stability_window": "Time window to evaluate reading stability (5-60 s).",
+          "stability_max_span": "Maximum span in mV for stable reading.",
+          "calibration_auto_return": "Return to exploitation mode after inactivity.",
           "temperature_entity": "HA sensor used to send T,<celsius> to the pH circuit. Leave empty for 25 °C default on the chip."
         }
+      }
+    }
+  },
+  "selector": {
+    "filter_type": {
+      "options": {
+        "none": "None (raw)",
+        "median": "Median",
+        "mean": "Mean"
       }
     }
   },
@@ -50,7 +70,9 @@
     },
     "sensor": {
       "orp": { "name": "ORP" },
+      "orp_raw": { "name": "ORP (raw)" },
       "ph": { "name": "pH" },
+      "ph_raw": { "name": "pH (raw)" },
       "compensation_temperature": { "name": "Compensation temperature" },
       "slope": { "name": "Calibration slope" },
       "status_reason": {
@@ -68,8 +90,16 @@
       "calibration_export": { "name": "Calibration export" },
       "firmware": { "name": "Firmware" }
     },
+    "select": {
+      "mode": {
+        "name": "Operating mode",
+        "state": {
+          "exploitation": "Exploitation",
+          "calibration": "Calibration"
+        }
+      }
+    },
     "switch": {
-      "continuous": { "name": "Continuous mode" },
       "led": { "name": "LED" },
       "sleep": { "name": "Sleep" },
       "extended_scale": { "name": "Extended scale" }
@@ -91,7 +121,12 @@
       "ph_mid": { "name": "Mid calibration value" },
       "ph_low": { "name": "Low calibration value" },
       "ph_high": { "name": "High calibration value" },
-      "continuous_interval": { "name": "Continuous interval" }
+      "calibration_interval": { "name": "Calibration interval" },
+      "measurement_interval": { "name": "Measurement interval" },
+      "filter_window": { "name": "Filter window" },
+      "stability_window": { "name": "Stability window" },
+      "stability_max_span": { "name": "Stability threshold" },
+      "calibration_auto_return": { "name": "Auto-return timer" }
     },
     "text": { "device_name": { "name": "Device name" } }
   },

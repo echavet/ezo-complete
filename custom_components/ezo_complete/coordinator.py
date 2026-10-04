@@ -1,4 +1,4 @@
-"""Coordinator: one stick, one profile, no pH/ORP if/else in I/O."""
+"""Coordinator: one stick, one profile, two operating modes."""
 
 from __future__ import annotations
 
@@ -40,29 +40,46 @@ from .codec import (
 )
 from .const import (
     CONF_BAUDRATE,
-    CONF_CONTINUOUS_INTERVAL,
-    CONF_CONTINUOUS_ON_START,
+    CONF_CALIBRATION_AUTO_RETURN,
+    CONF_CALIBRATION_INTERVAL,
     CONF_DEVICE_TYPE,
+    CONF_FILTER_TYPE,
+    CONF_FILTER_WINDOW,
+    CONF_MEASUREMENT_INTERVAL,
+    CONF_MODE,
     CONF_SERIAL_NUMBER,
+    CONF_SLEEP,
+    CONF_STABILITY_MAX_SPAN,
+    CONF_STABILITY_WINDOW,
     CONF_TEMPERATURE_ENTITY,
-    CONF_UPDATE_INTERVAL,
     DEFAULT_BAUDRATE,
-    DEFAULT_CONTINUOUS_INTERVAL,
-    DEFAULT_CONTINUOUS_ON_START,
-    DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_CALIBRATION_AUTO_RETURN,
+    DEFAULT_CALIBRATION_INTERVAL,
+    DEFAULT_FILTER_TYPE,
+    DEFAULT_FILTER_WINDOW,
+    DEFAULT_MEASUREMENT_INTERVAL,
+    DEFAULT_MODE,
+    DEFAULT_ORP_STABILITY_SPAN,
+    DEFAULT_PH_STABILITY_SPAN_MV,
+    DEFAULT_SLEEP,
+    DEFAULT_STABILITY_WINDOW,
     DOMAIN,
     FACTORY_ARM_SECONDS,
+    FILTER_NONE,
+    MODE_CALIBRATION,
+    MODE_EXPLOITATION,
+    NERNST_MV_PER_PH,
     RAW_LINE_HISTORY,
     RECONNECT_DELAY,
     RESPONSE_CODE_ENABLE_COMMANDS,
     STABILITY_MIN_SAMPLES,
     STABILITY_MIN_SAMPLES_CEILING,
     STABILITY_MIN_SAMPLES_FLOOR,
-    STABILITY_WINDOW_S,
     STALE_WAKE_SECONDS,
     TEMPERATURE_PUSH_DELTA,
 )
 from .export_store import ExportStore
+from .filter import ReadingFilter
 from .models import EzoDeviceState
 from .profiles import ProbeProfile, profile_for
 from .session import EzoClientError, EzoUnsupportedError, SerialSession
@@ -74,7 +91,7 @@ _LOGGER = logging.getLogger(__name__)
 class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         options = entry.options
-        interval = int(options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
+        interval = int(options.get(CONF_MEASUREMENT_INTERVAL, DEFAULT_MEASUREMENT_INTERVAL))
         super().__init__(
             hass,
             _LOGGER,
@@ -98,6 +115,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._listen_task: asyncio.Task[None] | None = None
         self._reconnect_task: asyncio.Task[None] | None = None
         self._temp_unsub = None
+        self._options_unsub = None
         self._unavailable_logged = False
         self._factory_armed_until = 0.0
         self._raw_history: deque[str] = deque(maxlen=RAW_LINE_HISTORY)
@@ -106,17 +124,29 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._hold_owner: asyncio.Task[object] | None = None
         self._last_diag_at = 0.0
         self._last_pushed_t: float | None = None
+        self._auto_return_task: asyncio.Task[None] | None = None
+        self._auto_return_deadline: float = 0.0
         self.cal_setpoints: dict[str, float] = {
             slot.key: slot.default for slot in self.profile.cal_slots if slot.has_number
         }
+        stability_window = float(options.get(CONF_STABILITY_WINDOW, DEFAULT_STABILITY_WINDOW))
+        stability_span_mv = float(options.get(
+            CONF_STABILITY_MAX_SPAN,
+            DEFAULT_PH_STABILITY_SPAN_MV if kind == "ph" else DEFAULT_ORP_STABILITY_SPAN
+        ))
+        self._slope_percent: float = 100.0
         self._stability = StabilityWindow(
-            window_s=STABILITY_WINDOW_S,
+            window_s=stability_window,
             min_samples=STABILITY_MIN_SAMPLES,
-            span=self.profile.stability_span,
-            interval_s=float(self.configured_continuous_interval),
+            span_threshold_mv=stability_span_mv,
+            interval_s=float(self.calibration_interval),
             min_samples_floor=STABILITY_MIN_SAMPLES_FLOOR,
             min_samples_ceiling=STABILITY_MIN_SAMPLES_CEILING,
+            to_mv_fn=self._ph_span_to_mv if kind == "ph" else None,
         )
+        filter_type = options.get(CONF_FILTER_TYPE, DEFAULT_FILTER_TYPE)
+        filter_window = int(options.get(CONF_FILTER_WINDOW, DEFAULT_FILTER_WINDOW))
+        self._filter = ReadingFilter(filter_type, filter_window)
         slug = (self.unique_id or "probe").replace("/", "_")
         self._exports = ExportStore(Path(hass.config.path(DOMAIN)), slug)
 
@@ -133,16 +163,100 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         )
 
     @property
-    def continuous_on_start(self) -> bool:
-        return bool(
-            self.entry.options.get(CONF_CONTINUOUS_ON_START, DEFAULT_CONTINUOUS_ON_START)
-        )
+    def mode(self) -> str:
+        return self.entry.options.get(CONF_MODE, DEFAULT_MODE)
 
     @property
-    def configured_continuous_interval(self) -> int:
-        return int(
-            self.entry.options.get(CONF_CONTINUOUS_INTERVAL, DEFAULT_CONTINUOUS_INTERVAL)
-        )
+    def measurement_interval(self) -> int:
+        return int(self.entry.options.get(CONF_MEASUREMENT_INTERVAL, DEFAULT_MEASUREMENT_INTERVAL))
+
+    @property
+    def calibration_interval(self) -> int:
+        return int(self.entry.options.get(CONF_CALIBRATION_INTERVAL, DEFAULT_CALIBRATION_INTERVAL))
+
+    @property
+    def calibration_auto_return(self) -> int:
+        return int(self.entry.options.get(CONF_CALIBRATION_AUTO_RETURN, DEFAULT_CALIBRATION_AUTO_RETURN))
+
+    @property
+    def filter_type(self) -> str:
+        return self.entry.options.get(CONF_FILTER_TYPE, DEFAULT_FILTER_TYPE)
+
+    @property
+    def filter_window(self) -> int:
+        return int(self.entry.options.get(CONF_FILTER_WINDOW, DEFAULT_FILTER_WINDOW))
+
+    @property
+    def stability_window(self) -> float:
+        return float(self.entry.options.get(CONF_STABILITY_WINDOW, DEFAULT_STABILITY_WINDOW))
+
+    @property
+    def stability_max_span(self) -> float:
+        """Stability threshold in mV (for both pH and ORP)."""
+        default = DEFAULT_PH_STABILITY_SPAN_MV if self.profile.kind == "ph" else DEFAULT_ORP_STABILITY_SPAN
+        return float(self.entry.options.get(CONF_STABILITY_MAX_SPAN, default))
+
+    @property
+    def persisted_sleep(self) -> bool:
+        return bool(self.entry.options.get(CONF_SLEEP, DEFAULT_SLEEP))
+
+    def _ph_span_to_mv(self, span_ph: float) -> float:
+        """Convert pH span to mV-equivalent using current slope.
+
+        Formula: mV = pH * NERNST_MV_PER_PH * (slope% / 100)
+        At 100% slope (ideal probe), 1 pH = 59.16 mV.
+        A low slope (e.g. 80%) means less mV per pH, so the same pH span
+        represents fewer mV, and the probe is actually less stable than it appears.
+        """
+        return span_ph * NERNST_MV_PER_PH * (self._slope_percent / 100.0)
+
+    def _maybe_update_slope(self, state: EzoDeviceState) -> None:
+        """Update slope conversion based on calibration state (pH probes only).
+
+        Logic:
+        - If factory calibration (cal_points == 0): use 100% (ideal Nernst)
+        - If both acid and base slopes are known: use acid below pH 7, base above,
+          or average if current reading is unknown
+        - Otherwise: use whichever slope is available, or 100% as fallback
+        """
+        if self.profile.kind != "ph":
+            return
+
+        cal_points = state.cal_points or 0
+        if cal_points == 0:
+            if self._slope_percent != 100.0:
+                self._slope_percent = 100.0
+                _LOGGER.debug("Factory calibration: using ideal slope 100%%")
+            return
+
+        acid_str = state.slope_acid
+        base_str = state.slope_base
+
+        try:
+            acid = float(acid_str) if acid_str else None
+            base = float(base_str) if base_str else None
+        except ValueError:
+            return
+
+        if acid is None and base is None:
+            return
+
+        current_ph = state.reading
+        if acid is not None and base is not None:
+            if current_ph is not None and current_ph < 7.0:
+                new_slope = acid
+            elif current_ph is not None and current_ph >= 7.0:
+                new_slope = base
+            else:
+                new_slope = (acid + base) / 2.0
+        elif acid is not None:
+            new_slope = acid
+        else:
+            new_slope = base
+
+        if new_slope is not None and new_slope > 0 and new_slope != self._slope_percent:
+            self._slope_percent = new_slope
+            _LOGGER.debug("Updated slope_percent to %.1f%% (pH=%.2f)", new_slope, current_ph or 0)
 
     async def async_setup(self) -> None:
         try:
@@ -155,24 +269,113 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             self.hass, self._listen_loop(), name=f"{DOMAIN}_listen"
         )
         self._async_track_temperature()
+        self._options_unsub = self.entry.add_update_listener(self._async_options_updated)
         self._mark_available()
+
+    async def _async_options_updated(
+        self, hass: HomeAssistant, entry: ConfigEntry
+    ) -> None:
+        """Handle options update - apply changes immediately."""
+        self._filter.configure(self.filter_type, self.filter_window)
+        self._stability = StabilityWindow(
+            window_s=self.stability_window,
+            min_samples=STABILITY_MIN_SAMPLES,
+            span_threshold_mv=self.stability_max_span,
+            interval_s=float(self.calibration_interval),
+            min_samples_floor=STABILITY_MIN_SAMPLES_FLOOR,
+            min_samples_ceiling=STABILITY_MIN_SAMPLES_CEILING,
+            to_mv_fn=self._ph_span_to_mv if self.profile.kind == "ph" else None,
+        )
+        if self.mode == MODE_EXPLOITATION:
+            self.update_interval = timedelta(seconds=self.measurement_interval)
+        self._reset_auto_return_timer()
+        self.async_update_listeners()
 
     async def async_shutdown(self) -> None:
         if self._temp_unsub is not None:
             self._temp_unsub()
             self._temp_unsub = None
-        for task in (self._listen_task, self._reconnect_task):
+        if self._options_unsub is not None:
+            self._options_unsub()
+            self._options_unsub = None
+        for task in (self._listen_task, self._reconnect_task, self._auto_return_task):
             if task is not None:
                 task.cancel()
         self._listen_task = None
         self._reconnect_task = None
+        self._auto_return_task = None
         await self.session.disconnect()
+
+    async def async_set_mode(self, mode: str) -> None:
+        """Switch between exploitation and calibration modes."""
+        if mode == self.mode:
+            self._reset_auto_return_timer()
+            return
+
+        await self._update_options({CONF_MODE: mode})
+
+        if mode == MODE_CALIBRATION:
+            self._filter.reset()
+            self._stability.reset()
+            interval = self.calibration_interval
+            await self._command(f"C,{interval}", ignore_error=True)
+            await self._command("C,?", ignore_error=True)
+            self._start_auto_return_timer()
+            _LOGGER.info("Switched to calibration mode (C,%d)", interval)
+        else:
+            self._cancel_auto_return_timer()
+            await self._command("C,0", ignore_error=True)
+            await self._command("C,?", ignore_error=True)
+            self.update_interval = timedelta(seconds=self.measurement_interval)
+            _LOGGER.info("Switched to exploitation mode (polling %d s)", self.measurement_interval)
+
+    async def _update_options(self, updates: dict) -> None:
+        """Update entry.options and trigger listeners."""
+        new_options = {**self.entry.options, **updates}
+        self.hass.config_entries.async_update_entry(self.entry, options=new_options)
+
+    def _start_auto_return_timer(self) -> None:
+        """Start or restart the auto-return timer for calibration mode."""
+        self._cancel_auto_return_timer()
+        minutes = self.calibration_auto_return
+        if minutes <= 0:
+            return
+        self._auto_return_deadline = time.monotonic() + minutes * 60
+        self._auto_return_task = self.entry.async_create_background_task(
+            self.hass, self._auto_return_loop(), name=f"{DOMAIN}_auto_return"
+        )
+
+    def _cancel_auto_return_timer(self) -> None:
+        """Cancel the auto-return timer."""
+        if self._auto_return_task is not None:
+            self._auto_return_task.cancel()
+            self._auto_return_task = None
+        self._auto_return_deadline = 0.0
+
+    def _reset_auto_return_timer(self) -> None:
+        """Reset the auto-return timer (called on calibration actions)."""
+        if self.mode == MODE_CALIBRATION and self.calibration_auto_return > 0:
+            self._start_auto_return_timer()
+
+    async def _auto_return_loop(self) -> None:
+        """Background task that returns to exploitation mode after timeout."""
+        try:
+            while True:
+                remaining = self._auto_return_deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                await asyncio.sleep(min(remaining, 10))
+            if self.mode == MODE_CALIBRATION:
+                _LOGGER.info("Auto-return: switching back to exploitation mode")
+                await self.async_set_mode(MODE_EXPLOITATION)
+        except asyncio.CancelledError:
+            pass
 
     async def _async_update_data(self) -> EzoDeviceState:
         if not self.session.connected:
             raise UpdateFailed("EZO Complete is disconnected")
         try:
-            if not self.data.continuous:
+            if self.mode == MODE_EXPLOITATION:
                 await self._async_push_temperature()
                 await self._command("R")
             elif time.monotonic() - self._last_diag_at >= 60:
@@ -184,21 +387,13 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             raise UpdateFailed(str(err)) from err
         return self.data
 
-    async def async_set_continuous(self, enabled: bool) -> None:
-        if enabled:
-            interval = self.data.continuous_interval or self.configured_continuous_interval
-            await self._command(f"C,{interval}")
-        else:
-            await self._command("C,0")
-        await self._command("C,?", ignore_error=True)
-        if self.data.continuous is None:
-            state = self.data.copy()
-            state.continuous = enabled
-            self.async_set_updated_data(state)
-
-    async def async_set_continuous_interval(self, seconds: int) -> None:
-        await self._command(f"C,{int(seconds)}")
-        await self._command("C,?")
+    async def async_set_calibration_interval(self, seconds: int) -> None:
+        """Update calibration interval setting."""
+        await self._update_options({CONF_CALIBRATION_INTERVAL: int(seconds)})
+        if self.mode == MODE_CALIBRATION:
+            await self._command(f"C,{int(seconds)}")
+            await self._command("C,?")
+        self._reset_auto_return_timer()
 
     async def async_set_led(self, enabled: bool) -> None:
         await self._command("L,1" if enabled else "L,0")
@@ -241,18 +436,20 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 "efface les points low/high (comportement Atlas). "
                 "La calibration continue.",
             )
+        self._reset_auto_return_timer()
         await self._async_run_calibration(command)
 
     async def async_calibrate_clear(self) -> None:
+        self._reset_auto_return_timer()
         await self._async_run_calibration("Cal,clear")
 
     @asynccontextmanager
     async def _hold_stream(self, *, restore: bool = True) -> AsyncIterator[None]:
-        if self.data.continuous is False or self._hold_owner is asyncio.current_task():
+        is_calibration = self.mode == MODE_CALIBRATION
+        if not is_calibration or self._hold_owner is asyncio.current_task():
             yield
             return
-        resume = restore and self.data.continuous is not False
-        interval = self.data.continuous_interval or self.configured_continuous_interval
+        interval = self.calibration_interval
         async with self._hold_lock:
             self._hold_owner = asyncio.current_task()
             self._pause_listen = True
@@ -262,7 +459,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 yield
             finally:
                 try:
-                    if resume:
+                    if restore and is_calibration:
                         await self._command(f"C,{interval}", ignore_error=True)
                         await self._command("C,?", ignore_error=True)
                 finally:
@@ -310,7 +507,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             raise
 
     async def async_set_sleeping(self, enabled: bool) -> None:
-        """Sleep is assumed-state: Atlas has no Sleep,? query."""
+        """Sleep is persisted in options and restored on startup/reconnect."""
+        await self._update_options({CONF_SLEEP: enabled})
         if enabled:
             await self._command("Sleep")
             state = self.data.copy()
@@ -322,7 +520,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         state.sleeping = False
         self.async_set_updated_data(state)
         await self._command("Status", ignore_error=True)
-        if not self.data.continuous:
+        if self.mode == MODE_EXPLOITATION:
             await self._command("R", ignore_error=True)
 
     async def async_find(self) -> None:
@@ -513,13 +711,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             }
         self.profile = profile
         self._stability = StabilityWindow(
-            window_s=STABILITY_WINDOW_S,
+            window_s=self.stability_window,
             min_samples=STABILITY_MIN_SAMPLES,
-            span=profile.stability_span,
-            interval_s=float(self.configured_continuous_interval),
+            span_threshold_mv=self.stability_max_span,
+            interval_s=float(self.calibration_interval),
             min_samples_floor=STABILITY_MIN_SAMPLES_FLOOR,
             min_samples_ceiling=STABILITY_MIN_SAMPLES_CEILING,
+            to_mv_fn=self._ph_span_to_mv if profile.kind == "ph" else None,
         )
+        self._filter.configure(self.filter_type, self.filter_window)
         self._last_pushed_t = None
         state = self.data.copy()
         state.kind = self.profile.kind
@@ -527,17 +727,38 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         state.firmware = info.firmware
         state.sleeping = False
         state.factory_armed = False
+        state.filter_type = self.filter_type
+        state.filter_window = self.filter_window
+
+        restore_path, export_dt = await self.hass.async_add_executor_job(
+            self._exports.get_latest_export_info
+        )
+        if export_dt is not None:
+            state.export_at = export_dt.isoformat()
+            state.restore_path = restore_path
+            _LOGGER.debug("Restored export_at from disk: %s", state.export_at)
+
         self.async_set_updated_data(state)
         await self._command("C,0", ignore_error=True)
         await self._enable_response_codes()
-        if self.continuous_on_start:
-            await self._command(
-                f"C,{self.configured_continuous_interval}", ignore_error=True
-            )
+
+        if self.mode == MODE_CALIBRATION:
+            await self._command(f"C,{self.calibration_interval}", ignore_error=True)
+            self._start_auto_return_timer()
+        else:
+            self.update_interval = timedelta(seconds=self.measurement_interval)
+
         await self._command("C,?", ignore_error=True)
         await self._refresh_diagnostics()
         self._last_diag_at = time.monotonic()
-        if not self.data.continuous:
+
+        if self.persisted_sleep:
+            _LOGGER.info("Restoring sleep state from options")
+            await self._command("Sleep", ignore_error=True)
+            state = self.data.copy()
+            state.sleeping = True
+            self.async_set_updated_data(state)
+        elif self.mode == MODE_EXPLOITATION:
             await self._async_push_temperature()
             await self._command("R", ignore_error=True)
 
@@ -648,9 +869,17 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                         self.profile.kind,
                     )
                     continue
-                state.reading = line.value
+                raw_value = line.value
+                state.reading_raw = raw_value
+                if self.mode == MODE_EXPLOITATION:
+                    filtered = self._filter.push(raw_value)
+                    state.reading = filtered
+                    state.reading_filtered = filtered
+                else:
+                    state.reading = raw_value
+                    state.reading_filtered = None
                 state.sleeping = False
-                self._update_stability(state, line.value)
+                self._update_stability(state, raw_value)
             elif line.kind is LineKind.QUERY:
                 self._apply_query(state, line)
             elif line.status_code == "SL":
@@ -661,6 +890,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         state.last_raw = lines[-1].raw
         state.last_lines = list(self._raw_history)
         state.factory_armed = time.monotonic() <= self._factory_armed_until
+        state.filter_type = self.filter_type
+        state.filter_window = self._filter.sample_count
         if last_command and last_command.split(",", 1)[0].lower() != "sleep":
             state.sleeping = False
         self.async_set_updated_data(state)
@@ -674,9 +905,11 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         state.stability_samples = snap.sample_count
         state.stability_required = snap.required_samples
         state.stability_span_threshold = snap.span_threshold
+        state.stability_span_mv = snap.span_mv
 
     def _apply_query(self, state: EzoDeviceState, line: ParsedLine) -> None:
         if self.profile.apply_query(state, line):
+            self._maybe_update_slope(state)
             return
         key = (line.query_key or "").lower()
         raw = line.raw

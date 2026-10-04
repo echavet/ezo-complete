@@ -50,6 +50,15 @@ class EzoSensorEntityDescription(SensorEntityDescription):
 
 
 def _reading_description(profile: ProbeProfile) -> EzoSensorEntityDescription:
+    """Main reading sensor - shows filtered value in exploitation, raw in calibration."""
+
+    def _reading_attributes(state: EzoDeviceState) -> dict[str, Any]:
+        attrs = profile.reading_attributes(state)
+        attrs["raw_value"] = state.reading_raw
+        attrs["filter_type"] = state.filter_type
+        attrs["filter_samples"] = state.filter_window
+        return attrs
+
     return EzoSensorEntityDescription(
         key=profile.reading_key,
         translation_key=profile.reading_key,
@@ -57,7 +66,20 @@ def _reading_description(profile: ProbeProfile) -> EzoSensorEntityDescription:
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=profile.reading_precision,
         value_fn=lambda s: s.reading,
-        extra_fn=profile.reading_attributes,
+        extra_fn=_reading_attributes,
+    )
+
+
+def _raw_reading_description(profile: ProbeProfile) -> EzoSensorEntityDescription:
+    """Raw (unfiltered) reading sensor - disabled by default."""
+    return EzoSensorEntityDescription(
+        key=f"{profile.reading_key}_raw",
+        translation_key=f"{profile.reading_key}_raw",
+        native_unit_of_measurement=profile.reading_unit,
+        state_class=SensorStateClass.MEASUREMENT,
+        suggested_display_precision=profile.reading_precision,
+        entity_registry_enabled_default=False,
+        value_fn=lambda s: s.reading_raw,
     )
 
 
@@ -142,7 +164,10 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
     profile = coordinator.profile
-    descriptions = [_reading_description(profile)]
+    descriptions = [
+        _reading_description(profile),
+        _raw_reading_description(profile),
+    ]
     for key in profile.extra_diagnostics:
         descriptions.append(EXTRA_DIAGNOSTICS[key])
     descriptions.extend(_shared_sensors(coordinator))

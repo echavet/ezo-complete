@@ -18,13 +18,13 @@
     },
     "error": {
       "cannot_connect": "Impossible d'ouvrir le port série ou le circuit n'a pas répondu",
-      "not_supported": "Ce périphérique n'est pas un circuit Atlas EZO pH ou ORP",
-      "unknown": "Erreur inattendue pendant la vérification"
+      "not_supported": "Ce périphérique série n'est pas un circuit Atlas EZO pH ou ORP",
+      "unknown": "Erreur inattendue lors de la détection du périphérique"
     },
     "abort": {
       "already_configured": "Ce stick EZO Complete est déjà configuré",
       "not_supported": "Ce périphérique USB n'est pas un circuit Atlas EZO pH ou ORP",
-      "cannot_connect": "Impossible de communiquer avec le périphérique USB",
+      "cannot_connect": "Impossible de communiquer avec le périphérique série USB",
       "reconfigure_successful": "Reconfiguration réussie"
     }
   },
@@ -33,34 +33,56 @@
       "init": {
         "title": "Options EZO Complete",
         "data": {
-          "update_interval": "Intervalle de polling (secondes)",
-          "continuous_on_start": "Mode continu au démarrage",
-          "continuous_interval": "Période des lectures continues (secondes)",
-          "temperature_entity": "Sonde de température (compensation pH)"
+          "measurement_interval": "Intervalle de mesure (secondes)",
+          "filter_type": "Filtre de lecture",
+          "filter_window": "Taille de la fenêtre de filtre",
+          "calibration_interval": "Intervalle de lecture en calibration (secondes)",
+          "stability_window": "Fenêtre de stabilité (secondes)",
+          "stability_max_span": "Seuil de stabilité (mV)",
+          "calibration_auto_return": "Retour auto en exploitation (minutes, 0=désactivé)",
+          "temperature_entity": "Capteur de température (compensation pH)"
         },
         "data_description": {
-          "temperature_entity": "Capteur HA utilisé pour envoyer T,<celsius> au circuit pH. Vide = 25 °C (défaut puce)."
+          "measurement_interval": "Intervalle de scrutation en mode exploitation (5-3600 s).",
+          "filter_type": "Appliquer un filtre médian ou moyen aux lectures en mode exploitation.",
+          "filter_window": "Nombre d'échantillons pour le filtre (1-20).",
+          "calibration_interval": "Intervalle du mode continu Atlas C,n (1-99 s).",
+          "stability_window": "Fenêtre temporelle pour évaluer la stabilité de la lecture (5-60 s).",
+          "stability_max_span": "Écart maximum en mV pour une lecture stable.",
+          "calibration_auto_return": "Retour au mode exploitation après inactivité.",
+          "temperature_entity": "Capteur HA utilisé pour envoyer T,<celsius> au circuit pH. Laisser vide pour 25 °C par défaut sur la puce."
         }
+      }
+    }
+  },
+  "selector": {
+    "filter_type": {
+      "options": {
+        "none": "Aucun (brut)",
+        "median": "Médiane",
+        "mean": "Moyenne"
       }
     }
   },
   "entity": {
     "binary_sensor": {
-      "reading_stable": { "name": "Mesure stable" }
+      "reading_stable": { "name": "Lecture stable" }
     },
     "sensor": {
       "orp": { "name": "ORP" },
+      "orp_raw": { "name": "ORP (brut)" },
       "ph": { "name": "pH" },
+      "ph_raw": { "name": "pH (brut)" },
       "compensation_temperature": { "name": "Température de compensation" },
       "slope": { "name": "Pente de calibration" },
       "status_reason": {
-        "name": "Raison du dernier reset",
+        "name": "Dernière raison de reset",
         "state": {
           "power": "Mise sous tension",
           "software": "Reset logiciel",
-          "brownout": "Brownout",
+          "brownout": "Chute de tension",
           "watchdog": "Watchdog",
-          "unknown": "Inconnue"
+          "unknown": "Inconnu"
         }
       },
       "status_voltage": { "name": "Tension d'alimentation" },
@@ -68,46 +90,59 @@
       "calibration_export": { "name": "Export de calibration" },
       "firmware": { "name": "Firmware" }
     },
+    "select": {
+      "mode": {
+        "name": "Mode de fonctionnement",
+        "state": {
+          "exploitation": "Exploitation",
+          "calibration": "Calibration"
+        }
+      }
+    },
     "switch": {
-      "continuous": { "name": "Mode continu" },
       "led": { "name": "LED" },
       "sleep": { "name": "Veille" },
       "extended_scale": { "name": "Échelle étendue" }
     },
     "button": {
       "calibrate_225": { "name": "Calibrer 225 mV" },
-      "calibrate_custom": { "name": "Calibrer la valeur personnalisée" },
+      "calibrate_custom": { "name": "Calibrer valeur personnalisée" },
       "calibrate_mid": { "name": "Calibrer mid (pH 7)" },
       "calibrate_low": { "name": "Calibrer low (pH 4)" },
       "calibrate_high": { "name": "Calibrer high (pH 10)" },
       "calibrate_clear": { "name": "Effacer la calibration" },
-      "find": { "name": "Trouver l'appareil" },
+      "find": { "name": "Localiser l'appareil" },
       "export_calibration": { "name": "Exporter la calibration" },
       "restore_calibration": { "name": "Restaurer la dernière calibration" },
       "factory_reset": { "name": "Reset usine" }
     },
     "number": {
       "calibration_value": { "name": "Valeur de calibration personnalisée" },
-      "ph_mid": { "name": "Valeur mid" },
-      "ph_low": { "name": "Valeur low" },
-      "ph_high": { "name": "Valeur high" },
-      "continuous_interval": { "name": "Intervalle du mode continu" }
+      "ph_mid": { "name": "Valeur de calibration mid" },
+      "ph_low": { "name": "Valeur de calibration low" },
+      "ph_high": { "name": "Valeur de calibration high" },
+      "calibration_interval": { "name": "Intervalle de calibration" },
+      "measurement_interval": { "name": "Intervalle de mesure" },
+      "filter_window": { "name": "Fenêtre de filtre" },
+      "stability_window": { "name": "Fenêtre de stabilité" },
+      "stability_max_span": { "name": "Seuil de stabilité" },
+      "calibration_auto_return": { "name": "Timer de retour auto" }
     },
     "text": { "device_name": { "name": "Nom de l'appareil" } }
   },
   "services": {
-    "send_command": { "name": "Envoyer une commande", "description": "Commande UART EZO brute sans CR." },
-    "factory_reset": { "name": "Reset usine", "description": "Exige confirm: true." },
-    "export_calibration": { "name": "Exporter la calibration", "description": "Dump Atlas : archive datée + fichier restore." },
-    "import_calibration": { "name": "Importer la calibration", "description": "Coller un dump Atlas." },
-    "restore_calibration": { "name": "Restaurer la dernière calibration", "description": "Lit le fichier .import_calibration de cet appareil." }
+    "send_command": { "name": "Envoyer commande", "description": "Commande UART EZO brute sans CR." },
+    "factory_reset": { "name": "Reset usine", "description": "Nécessite confirm: true." },
+    "export_calibration": { "name": "Exporter calibration", "description": "Exporte la calibration Atlas vers une archive datée + fichier de restauration." },
+    "import_calibration": { "name": "Importer calibration", "description": "Coller un dump Atlas." },
+    "restore_calibration": { "name": "Restaurer dernière calibration", "description": "Lire le fichier .import_calibration du périphérique." }
   },
   "exceptions": {
     "not_connected": { "message": "Le stick EZO Complete n'est pas connecté" },
-    "command_failed": { "message": "La commande {command} a échoué : {error}" },
-    "unknown_device": { "message": "Appareil EZO Complete inconnu" },
-    "factory_not_confirmed": { "message": "Le reset usine exige confirm: true" },
-    "import_empty": { "message": "Les données d'import sont vides" },
-    "restore_missing": { "message": "Pas de fichier de restore à {path}. Exportez d'abord." }
+    "command_failed": { "message": "Commande {command} échouée : {error}" },
+    "unknown_device": { "message": "Périphérique EZO Complete inconnu" },
+    "factory_not_confirmed": { "message": "Le reset usine nécessite confirm: true" },
+    "import_empty": { "message": "Le payload d'import de calibration est vide" },
+    "restore_missing": { "message": "Pas de fichier de restauration à {path}. Exportez d'abord." }
   }
 }

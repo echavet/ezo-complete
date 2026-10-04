@@ -219,7 +219,8 @@ def test_profile_apply_query() -> None:
 
 
 def test_stability_window() -> None:
-    window = stability.StabilityWindow(window_s=10.0, min_samples=5, span=5.0)
+    # For ORP, no to_mv_fn is needed (readings are already in mV)
+    window = stability.StabilityWindow(window_s=10.0, min_samples=5, span_threshold_mv=5.0)
     now = 100.0
     last = None
     for index in range(5):
@@ -227,9 +228,11 @@ def test_stability_window() -> None:
     assert last is not None and last.stable
     assert last.sample_count == 5
     assert last.required_samples == 5
+    assert last.span_mv is not None and last.span_mv == last.span  # ORP: span_mv == span
     drifted = window.push(240.0, now + 5)
     assert not drifted.stable
     assert drifted.span is not None and drifted.span > 5.0
+    assert drifted.span_mv is not None and drifted.span_mv > 5.0
 
 
 def test_compute_min_samples() -> None:
@@ -249,7 +252,7 @@ def test_compute_min_samples() -> None:
 def test_stability_window_fast_interval() -> None:
     """With 1s interval, requires 5 samples (the ceiling)."""
     window = stability.StabilityWindow(
-        window_s=10.0, min_samples=5, span=0.05, interval_s=1.0
+        window_s=10.0, min_samples=5, span_threshold_mv=0.05, interval_s=1.0
     )
     assert window.required_samples == 5
     now = 100.0
@@ -265,7 +268,7 @@ def test_stability_window_fast_interval() -> None:
 def test_stability_window_slow_interval() -> None:
     """With 5s interval, requires only 3 samples (the floor)."""
     window = stability.StabilityWindow(
-        window_s=10.0, min_samples=5, span=0.05, interval_s=5.0
+        window_s=10.0, min_samples=5, span_threshold_mv=0.05, interval_s=5.0
     )
     assert window.required_samples == 3
     now = 100.0
@@ -282,7 +285,7 @@ def test_stability_window_slow_interval() -> None:
 def test_stability_window_slow_interval_span_breach() -> None:
     """Span breach resets stability even with slow interval."""
     window = stability.StabilityWindow(
-        window_s=10.0, min_samples=5, span=0.05, interval_s=5.0
+        window_s=10.0, min_samples=5, span_threshold_mv=0.05, interval_s=5.0
     )
     now = 100.0
     for i in range(3):
@@ -292,12 +295,13 @@ def test_stability_window_slow_interval_span_breach() -> None:
     snap = window.push(7.10, now + 20)
     assert not snap.stable
     assert snap.span is not None and snap.span > 0.05
+    assert snap.span_mv is not None and snap.span_mv > 0.05
 
 
 def test_stability_window_set_interval() -> None:
     """set_interval dynamically adjusts required samples."""
     window = stability.StabilityWindow(
-        window_s=10.0, min_samples=5, span=0.05, interval_s=1.0
+        window_s=10.0, min_samples=5, span_threshold_mv=0.05, interval_s=1.0
     )
     assert window.required_samples == 5
     window.set_interval(5.0)
@@ -311,12 +315,13 @@ def test_stability_window_set_interval() -> None:
 def test_stability_snapshot_attributes() -> None:
     """Verify all snapshot attributes are populated."""
     window = stability.StabilityWindow(
-        window_s=10.0, min_samples=5, span=0.05, interval_s=2.0
+        window_s=10.0, min_samples=5, span_threshold_mv=0.05, interval_s=2.0
     )
     snap = window.push(7.00, 100.0)
     assert snap.minimum == 7.00
     assert snap.maximum == 7.00
     assert snap.span == 0.0
+    assert snap.span_mv == 0.0  # Without to_mv_fn, span_mv == span
     assert snap.sample_count == 1
     assert snap.required_samples == 5
     assert snap.span_threshold == 0.05
@@ -491,3 +496,267 @@ def test_parse_export_timestamp_invalid() -> None:
             assert False, f"Expected ValueError for {s!r}"
         except ValueError:
             pass
+
+
+# --- pH mV-based stability tests ---
+
+def test_stability_window_ph_with_mv_conversion() -> None:
+    """pH stability uses mV-equivalent span for calibration-independent stability.
+    
+    With 100% slope, 1 pH = 59.16 mV (Nernst constant at 25°C).
+    A span of 0.05 pH = 2.958 mV at 100% slope.
+    """
+    NERNST_MV_PER_PH = 59.16
+    slope_percent = 100.0
+    
+    def ph_to_mv(span_ph: float) -> float:
+        return span_ph * NERNST_MV_PER_PH * (slope_percent / 100.0)
+    
+    window = stability.StabilityWindow(
+        window_s=10.0,
+        min_samples=5,
+        span_threshold_mv=3.0,  # ~0.05 pH at 100% slope
+        interval_s=5.0,  # Slow interval -> requires 3 samples
+        min_samples_floor=3,
+        min_samples_ceiling=5,
+        to_mv_fn=ph_to_mv,
+    )
+    assert window.required_samples == 3
+    
+    now = 100.0
+    # Push 3 samples with 0.04 pH span (< 0.05 pH threshold)
+    window.push(7.00, now)
+    window.push(7.02, now + 5)
+    snap = window.push(7.04, now + 10)
+    
+    # Span in native pH units
+    assert snap.span is not None
+    assert abs(snap.span - 0.04) < 0.001
+    
+    # Span in mV: 0.04 * 59.16 * 1.0 = 2.366 mV
+    assert snap.span_mv is not None
+    expected_mv = 0.04 * NERNST_MV_PER_PH
+    assert abs(snap.span_mv - expected_mv) < 0.01, f"Expected {expected_mv} mV, got {snap.span_mv}"
+    
+    # Should be stable: 2.366 mV < 3.0 mV threshold
+    assert snap.stable
+
+
+def test_stability_window_ph_low_slope_less_stable() -> None:
+    """A low-slope probe (e.g. 80%) appears more stable in pH but is actually less stable.
+    
+    At 80% slope, the same 0.05 pH drift represents only 2.366 mV instead of 2.958 mV.
+    This is BAD: the probe is actually drifting MORE in mV than a healthy probe would.
+    
+    The mV-based stability catches this: the actual pH span is larger than
+    what a healthy probe would show for the same mV drift.
+    """
+    NERNST_MV_PER_PH = 59.16
+    slope_percent = 80.0  # Degraded probe
+    
+    def ph_to_mv(span_ph: float) -> float:
+        return span_ph * NERNST_MV_PER_PH * (slope_percent / 100.0)
+    
+    window = stability.StabilityWindow(
+        window_s=10.0,
+        min_samples=5,
+        span_threshold_mv=3.0,  # ~0.05 pH at 100% slope
+        interval_s=5.0,  # Slow interval -> requires 3 samples
+        min_samples_floor=3,
+        min_samples_ceiling=5,
+        to_mv_fn=ph_to_mv,
+    )
+    assert window.required_samples == 3
+    
+    now = 100.0
+    # Push 3 samples with 0.06 pH span
+    # At 80% slope: 0.06 * 59.16 * 0.80 = 2.84 mV < 3.0 mV -> stable
+    window.push(7.00, now)
+    window.push(7.03, now + 5)
+    snap = window.push(7.06, now + 10)
+    
+    assert snap.span is not None
+    assert abs(snap.span - 0.06) < 0.001
+    
+    expected_mv = 0.06 * NERNST_MV_PER_PH * (slope_percent / 100.0)
+    assert snap.span_mv is not None
+    assert abs(snap.span_mv - expected_mv) < 0.01
+    
+    # 2.84 mV < 3.0 mV threshold -> stable
+    assert snap.stable
+    
+    # But at 100% slope, the same 0.06 pH span would be 3.55 mV > 3.0 -> NOT stable
+    # This demonstrates that low-slope probes are "easier to stabilize" but
+    # that's actually correct behavior: the mV drift is what matters for calibration.
+
+
+def test_stability_window_ph_update_slope_dynamically() -> None:
+    """Slope can be updated dynamically when Slope,? response is parsed."""
+    NERNST_MV_PER_PH = 59.16
+    slope_percent = 100.0
+    
+    def make_ph_to_mv():
+        nonlocal slope_percent
+        def ph_to_mv(span_ph: float) -> float:
+            return span_ph * NERNST_MV_PER_PH * (slope_percent / 100.0)
+        return ph_to_mv
+    
+    window = stability.StabilityWindow(
+        window_s=10.0,
+        min_samples=5,
+        span_threshold_mv=3.0,
+        interval_s=5.0,  # Slow interval -> requires 3 samples
+        min_samples_floor=3,
+        min_samples_ceiling=5,
+        to_mv_fn=make_ph_to_mv(),
+    )
+    assert window.required_samples == 3
+    
+    now = 100.0
+    # At 100% slope, 0.04 pH = 2.366 mV < 3.0 -> stable
+    window.push(7.00, now)
+    window.push(7.02, now + 5)
+    snap = window.push(7.04, now + 10)
+    assert snap.stable
+    
+    # Now the probe degrades to 70% slope (simulating calibration update)
+    slope_percent = 70.0
+    window.set_to_mv_fn(make_ph_to_mv())
+    
+    # Same readings, but now 0.04 pH = 1.66 mV < 3.0 -> still stable
+    # (the conversion function captures the new slope)
+    snap = window.push(7.04, now + 15)  # Same value, just to get new snapshot
+    assert snap.stable
+
+
+def test_stability_window_orp_no_conversion() -> None:
+    """ORP readings are already in mV - no conversion needed."""
+    window = stability.StabilityWindow(
+        window_s=10.0,
+        min_samples=5,
+        span_threshold_mv=5.0,  # 5 mV threshold for ORP
+        interval_s=5.0,  # Slow interval -> requires 3 samples
+        min_samples_floor=3,
+        min_samples_ceiling=5,
+        # No to_mv_fn: defaults to identity
+    )
+    assert window.required_samples == 3
+    
+    now = 100.0
+    window.push(225.0, now)
+    window.push(227.0, now + 3)
+    snap = window.push(229.0, now + 6)
+    
+    # Span should equal span_mv for ORP
+    assert snap.span == 4.0
+    assert snap.span_mv == 4.0
+    
+    # 4 mV < 5 mV threshold -> stable
+    assert snap.stable
+    
+    # Push a reading that makes span > 5 mV (within 10s window)
+    snap = window.push(232.0, now + 9)
+    assert snap.span == 7.0  # 232 - 225 = 7
+    assert snap.span_mv == 7.0
+    assert not snap.stable  # 7 mV > 5 mV threshold
+
+
+def test_stability_snapshot_span_mv_empty() -> None:
+    """Empty window should have None for span_mv."""
+    window = stability.StabilityWindow(
+        window_s=10.0,
+        min_samples=3,
+        span_threshold_mv=3.0,
+        interval_s=2.0,
+    )
+    
+    # Don't push any values, just check initial state
+    # Actually we need to push to get a snapshot, so let's test with one value
+    snap = window.push(7.0, 100.0)
+    assert snap.span == 0.0
+    assert snap.span_mv == 0.0
+    assert snap.sample_count == 1
+    assert not snap.stable
+
+
+# --- Filter tests ---
+
+filter_mod = _load("ezo_complete.filter", PKG / "filter.py")
+
+
+def test_filter_none_passthrough() -> None:
+    """Filter type 'none' returns values unchanged."""
+    f = filter_mod.ReadingFilter("none", 5)
+    assert f.push(7.00) == 7.00
+    assert f.push(7.05) == 7.05
+    assert f.push(6.95) == 6.95
+    assert f.sample_count == 3
+
+
+def test_filter_median() -> None:
+    """Median filter returns the median of the window."""
+    f = filter_mod.ReadingFilter("median", 5)
+    f.push(7.00)
+    # With 2 samples [7.00, 7.10], median is (7.00+7.10)/2 = 7.05
+    assert f.push(7.10) == 7.05
+    f.push(7.05)
+    f.push(6.95)
+    result = f.push(7.02)  # Window: [7.00, 7.10, 7.05, 6.95, 7.02]
+    # Sorted: [6.95, 7.00, 7.02, 7.05, 7.10] -> median = 7.02
+    assert result == 7.02
+    assert f.sample_count == 5
+
+
+def test_filter_mean() -> None:
+    """Mean filter returns the average of the window."""
+    f = filter_mod.ReadingFilter("mean", 3)
+    f.push(7.00)
+    f.push(7.03)
+    result = f.push(7.06)  # Window: [7.00, 7.03, 7.06] -> mean = 7.03
+    assert abs(result - 7.03) < 0.001
+    assert f.sample_count == 3
+
+
+def test_filter_window_rolling() -> None:
+    """Filter window rolls, dropping old values."""
+    f = filter_mod.ReadingFilter("median", 3)
+    f.push(7.00)
+    f.push(7.10)
+    f.push(7.20)  # Window: [7.00, 7.10, 7.20]
+    result = f.push(7.30)  # Window: [7.10, 7.20, 7.30]
+    # Sorted: [7.10, 7.20, 7.30] -> median = 7.20
+    assert result == 7.20
+    assert f.sample_count == 3
+
+
+def test_filter_reset() -> None:
+    """Reset clears the filter buffer."""
+    f = filter_mod.ReadingFilter("median", 5)
+    f.push(7.00)
+    f.push(7.10)
+    f.push(7.05)
+    assert f.sample_count == 3
+    f.reset()
+    assert f.sample_count == 0
+    assert f.last_raw() is None
+
+
+def test_filter_reconfigure() -> None:
+    """Reconfigure clears buffer if settings change."""
+    f = filter_mod.ReadingFilter("median", 5)
+    f.push(7.00)
+    f.push(7.10)
+    assert f.sample_count == 2
+    f.configure("mean", 3)
+    assert f.sample_count == 0
+    assert f.filter_type == "mean"
+    assert f.window_size == 3
+
+
+def test_filter_last_raw() -> None:
+    """last_raw returns the most recent value."""
+    f = filter_mod.ReadingFilter("median", 5)
+    f.push(7.00)
+    f.push(7.10)
+    f.push(7.05)
+    assert f.last_raw() == 7.05

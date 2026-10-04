@@ -4,6 +4,11 @@ USB stability improvements (2026.9):
 - Entries created manually without USB serial now match USB rediscovery
 - USB unplug/replug updates the port path without requiring delete/re-add
 - Migration upgrades "unknown" serials to real USB serials when available
+
+UX refactor (2026.10):
+- Mode select (exploitation/calibration) replaces continuous switch
+- New options: measurement_interval, filter, stability settings, auto-return
+- Config migration v2.1 -> v3
 """
 
 from __future__ import annotations
@@ -26,7 +31,6 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_NAME, CONF_PORT
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.selector import (
-    BooleanSelector,
     EntitySelector,
     EntitySelectorConfig,
     NumberSelector,
@@ -43,22 +47,53 @@ from homeassistant.helpers.service_info.usb import UsbServiceInfo
 from .codec import unique_id_from_serial
 from .const import (
     BAUDRATES,
+    CALIBRATION_AUTO_RETURN_MAX,
+    CALIBRATION_AUTO_RETURN_MIN,
     CONF_BAUDRATE,
+    CONF_CALIBRATION_AUTO_RETURN,
+    CONF_CALIBRATION_INTERVAL,
     CONF_CONTINUOUS_INTERVAL,
     CONF_CONTINUOUS_ON_START,
     CONF_DEVICE_TYPE,
+    CONF_FILTER_TYPE,
+    CONF_FILTER_WINDOW,
     CONF_FIRMWARE,
+    CONF_MEASUREMENT_INTERVAL,
+    CONF_MODE,
     CONF_SERIAL_NUMBER,
+    CONF_SLEEP,
+    CONF_STABILITY_MAX_SPAN,
+    CONF_STABILITY_WINDOW,
     CONF_TEMPERATURE_ENTITY,
     CONF_UPDATE_INTERVAL,
     CONTINUOUS_INTERVAL_MAX,
     CONTINUOUS_INTERVAL_MIN,
     DEFAULT_BAUDRATE,
-    DEFAULT_CONTINUOUS_INTERVAL,
-    DEFAULT_CONTINUOUS_ON_START,
+    DEFAULT_CALIBRATION_AUTO_RETURN,
+    DEFAULT_CALIBRATION_INTERVAL,
+    DEFAULT_FILTER_TYPE,
+    DEFAULT_FILTER_WINDOW,
+    DEFAULT_MEASUREMENT_INTERVAL,
+    DEFAULT_MODE,
     DEFAULT_NAME,
-    DEFAULT_UPDATE_INTERVAL,
+    DEFAULT_ORP_STABILITY_SPAN,
+    DEFAULT_PH_STABILITY_SPAN_MV,
+    DEFAULT_SLEEP,
+    DEFAULT_STABILITY_WINDOW,
     DOMAIN,
+    FILTER_MEAN,
+    FILTER_MEDIAN,
+    FILTER_NONE,
+    FILTER_WINDOW_MAX,
+    FILTER_WINDOW_MIN,
+    MEASUREMENT_INTERVAL_MAX,
+    MEASUREMENT_INTERVAL_MIN,
+    ORP_STABILITY_SPAN_MAX,
+    ORP_STABILITY_SPAN_MIN,
+    PH_STABILITY_SPAN_MV_MAX,
+    PH_STABILITY_SPAN_MV_MIN,
+    STABILITY_WINDOW_MAX,
+    STABILITY_WINDOW_MIN,
 )
 from .profiles import profile_for
 from .session import EzoClientError, EzoUnsupportedError, probe_ezo
@@ -69,6 +104,7 @@ _LOGGER = logging.getLogger(__name__)
 def _get_async_migrate_unique_id():
     """Lazy import to avoid circular dependency."""
     from . import async_migrate_unique_id
+
     return async_migrate_unique_id
 
 
@@ -106,8 +142,8 @@ async def _try_get_usb_serial(hass: HomeAssistant, port: str) -> str | None:
 
 
 class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
-    VERSION = 2
-    MINOR_VERSION = 1
+    VERSION = 3
+    MINOR_VERSION = 0
 
     def __init__(self) -> None:
         self._port: str | None = None
@@ -320,7 +356,9 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
                 abort_mismatch()
         return None
 
-    def _async_build_entry(self, port: str, baudrate: int, name: str) -> ConfigFlowResult:
+    def _async_build_entry(
+        self, port: str, baudrate: int, name: str
+    ) -> ConfigFlowResult:
         return self.async_create_entry(
             title=name,
             data={
@@ -332,9 +370,14 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_FIRMWARE: self._firmware,
             },
             options={
-                CONF_UPDATE_INTERVAL: DEFAULT_UPDATE_INTERVAL,
-                CONF_CONTINUOUS_ON_START: DEFAULT_CONTINUOUS_ON_START,
-                CONF_CONTINUOUS_INTERVAL: DEFAULT_CONTINUOUS_INTERVAL,
+                CONF_MODE: DEFAULT_MODE,
+                CONF_MEASUREMENT_INTERVAL: DEFAULT_MEASUREMENT_INTERVAL,
+                CONF_FILTER_TYPE: DEFAULT_FILTER_TYPE,
+                CONF_FILTER_WINDOW: DEFAULT_FILTER_WINDOW,
+                CONF_CALIBRATION_INTERVAL: DEFAULT_CALIBRATION_INTERVAL,
+                CONF_STABILITY_WINDOW: DEFAULT_STABILITY_WINDOW,
+                CONF_CALIBRATION_AUTO_RETURN: DEFAULT_CALIBRATION_AUTO_RETURN,
+                CONF_SLEEP: DEFAULT_SLEEP,
             },
         )
 
@@ -350,29 +393,79 @@ class EzoCompleteOptionsFlow(OptionsFlow):
     ) -> ConfigFlowResult:
         if user_input is not None:
             data = {
-                CONF_UPDATE_INTERVAL: int(user_input[CONF_UPDATE_INTERVAL]),
-                CONF_CONTINUOUS_ON_START: bool(user_input[CONF_CONTINUOUS_ON_START]),
-                CONF_CONTINUOUS_INTERVAL: int(user_input[CONF_CONTINUOUS_INTERVAL]),
+                CONF_MEASUREMENT_INTERVAL: int(user_input[CONF_MEASUREMENT_INTERVAL]),
+                CONF_FILTER_TYPE: user_input[CONF_FILTER_TYPE],
+                CONF_FILTER_WINDOW: int(user_input[CONF_FILTER_WINDOW]),
+                CONF_CALIBRATION_INTERVAL: int(user_input[CONF_CALIBRATION_INTERVAL]),
+                CONF_STABILITY_WINDOW: float(user_input[CONF_STABILITY_WINDOW]),
+                CONF_STABILITY_MAX_SPAN: float(user_input[CONF_STABILITY_MAX_SPAN]),
+                CONF_CALIBRATION_AUTO_RETURN: int(
+                    user_input[CONF_CALIBRATION_AUTO_RETURN]
+                ),
             }
             if CONF_TEMPERATURE_ENTITY in user_input:
                 data[CONF_TEMPERATURE_ENTITY] = user_input.get(CONF_TEMPERATURE_ENTITY)
+            existing = self.config_entry.options
+            data[CONF_MODE] = existing.get(CONF_MODE, DEFAULT_MODE)
+            data[CONF_SLEEP] = existing.get(CONF_SLEEP, DEFAULT_SLEEP)
             return self.async_create_entry(title="", data=data)
 
         options = self.config_entry.options
+        kind = (self.config_entry.data.get(CONF_DEVICE_TYPE) or "").lower()
+        try:
+            profile = profile_for(kind)
+        except ValueError:
+            profile = None
+
+        if kind == "ph":
+            span_min = PH_STABILITY_SPAN_MV_MIN
+            span_max = PH_STABILITY_SPAN_MV_MAX
+            span_default = DEFAULT_PH_STABILITY_SPAN_MV
+        else:
+            span_min = ORP_STABILITY_SPAN_MIN
+            span_max = ORP_STABILITY_SPAN_MAX
+            span_default = DEFAULT_ORP_STABILITY_SPAN
+
         schema: dict[Any, Any] = {
             vol.Required(
-                CONF_UPDATE_INTERVAL,
-                default=options.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+                CONF_MEASUREMENT_INTERVAL,
+                default=options.get(
+                    CONF_MEASUREMENT_INTERVAL, DEFAULT_MEASUREMENT_INTERVAL
+                ),
             ): NumberSelector(
-                NumberSelectorConfig(min=1, max=300, step=1, mode=NumberSelectorMode.BOX)
+                NumberSelectorConfig(
+                    min=MEASUREMENT_INTERVAL_MIN,
+                    max=MEASUREMENT_INTERVAL_MAX,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
             ),
             vol.Required(
-                CONF_CONTINUOUS_ON_START,
-                default=options.get(CONF_CONTINUOUS_ON_START, DEFAULT_CONTINUOUS_ON_START),
-            ): BooleanSelector(),
+                CONF_FILTER_TYPE,
+                default=options.get(CONF_FILTER_TYPE, DEFAULT_FILTER_TYPE),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[FILTER_NONE, FILTER_MEDIAN, FILTER_MEAN],
+                    mode=SelectSelectorMode.DROPDOWN,
+                    translation_key="filter_type",
+                )
+            ),
             vol.Required(
-                CONF_CONTINUOUS_INTERVAL,
-                default=options.get(CONF_CONTINUOUS_INTERVAL, DEFAULT_CONTINUOUS_INTERVAL),
+                CONF_FILTER_WINDOW,
+                default=options.get(CONF_FILTER_WINDOW, DEFAULT_FILTER_WINDOW),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=FILTER_WINDOW_MIN,
+                    max=FILTER_WINDOW_MAX,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_CALIBRATION_INTERVAL,
+                default=options.get(
+                    CONF_CALIBRATION_INTERVAL, DEFAULT_CALIBRATION_INTERVAL
+                ),
             ): NumberSelector(
                 NumberSelectorConfig(
                     min=CONTINUOUS_INTERVAL_MIN,
@@ -381,12 +474,43 @@ class EzoCompleteOptionsFlow(OptionsFlow):
                     mode=NumberSelectorMode.BOX,
                 )
             ),
+            vol.Required(
+                CONF_STABILITY_WINDOW,
+                default=options.get(CONF_STABILITY_WINDOW, DEFAULT_STABILITY_WINDOW),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=STABILITY_WINDOW_MIN,
+                    max=STABILITY_WINDOW_MAX,
+                    step=1,
+                    mode=NumberSelectorMode.SLIDER,
+                )
+            ),
+            vol.Required(
+                CONF_STABILITY_MAX_SPAN,
+                default=options.get(CONF_STABILITY_MAX_SPAN, span_default),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=span_min,
+                    max=span_max,
+                    step=0.1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_CALIBRATION_AUTO_RETURN,
+                default=options.get(
+                    CONF_CALIBRATION_AUTO_RETURN, DEFAULT_CALIBRATION_AUTO_RETURN
+                ),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=CALIBRATION_AUTO_RETURN_MIN,
+                    max=CALIBRATION_AUTO_RETURN_MAX,
+                    step=1,
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
         }
-        kind = (self.config_entry.data.get(CONF_DEVICE_TYPE) or "").lower()
-        try:
-            profile = profile_for(kind)
-        except ValueError:
-            profile = None
+
         if profile is not None and profile.supports_temperature:
             schema[
                 vol.Optional(
@@ -394,6 +518,9 @@ class EzoCompleteOptionsFlow(OptionsFlow):
                     default=options.get(CONF_TEMPERATURE_ENTITY),
                 )
             ] = EntitySelector(
-                EntitySelectorConfig(domain="sensor", device_class=SensorDeviceClass.TEMPERATURE)
+                EntitySelectorConfig(
+                    domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
+                )
             )
+
         return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))
