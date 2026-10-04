@@ -39,10 +39,11 @@ from .codec import (
 )
 from .validation import (
     ValueType,
-    is_valid_reading,
     is_valid_slope,
+    is_valid_slope_offset,
     is_valid_temperature,
     is_valid_voltage,
+    validate_reading,
 )
 from .const import (
     CONF_BAUDRATE,
@@ -136,6 +137,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._auto_return_task: asyncio.Task[None] | None = None
         self._auto_return_deadline: float = 0.0
         self._last_temp_push_at: float = 0.0
+        self._pending_temp_value: float | None = None
+        self._deferred_temp_push_task: asyncio.Task[None] | None = None
         self._configured_interval: timedelta = timedelta(seconds=max(interval, 1))
         self.cal_setpoints: dict[str, float] = {
             slot.key: slot.default for slot in self.profile.cal_slots if slot.has_number
@@ -357,12 +360,18 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         if self._options_unsub is not None:
             self._options_unsub()
             self._options_unsub = None
-        for task in (self._listen_task, self._reconnect_task, self._auto_return_task):
+        for task in (
+            self._listen_task,
+            self._reconnect_task,
+            self._auto_return_task,
+            self._deferred_temp_push_task,
+        ):
             if task is not None:
                 task.cancel()
         self._listen_task = None
         self._reconnect_task = None
         self._auto_return_task = None
+        self._deferred_temp_push_task = None
         await self.session.disconnect()
 
     async def async_set_mode(self, mode: str) -> None:
@@ -789,26 +798,74 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         Called from _on_temp callback. Rate-limited to at most once per 30s,
         and only if temperature changed >= 0.05°C. Uses the command lock to
         avoid interfering with polls.
+        
+        If within the rate limit window, defers the push to when the window ends
+        (instead of dropping the change).
         """
         if not self.profile.supports_temperature:
             return
         if self.persisted_sleep:
             return
-        now = time.monotonic()
-        if now - self._last_temp_push_at < TEMPERATURE_PUSH_MIN_INTERVAL:
-            return
+        
         value = self._get_temperature_value()
         if value is None:
             return
+        
+        # Check if temperature actually changed enough
         if (
             self._last_pushed_t is not None
             and abs(value - self._last_pushed_t) < TEMPERATURE_PUSH_DELTA
         ):
             return
+        
+        now = time.monotonic()
+        time_since_last = now - self._last_temp_push_at
+        
+        if time_since_last >= TEMPERATURE_PUSH_MIN_INTERVAL:
+            # Can push immediately
+            await self._do_temperature_push(value)
+        else:
+            # Defer: store the pending value and schedule a trailing push
+            self._pending_temp_value = value
+            remaining = TEMPERATURE_PUSH_MIN_INTERVAL - time_since_last
+            self._schedule_deferred_temp_push(remaining)
+
+    def _schedule_deferred_temp_push(self, delay: float) -> None:
+        """Schedule a deferred temperature push after the rate limit window."""
+        # Cancel any existing deferred push
+        if self._deferred_temp_push_task is not None:
+            self._deferred_temp_push_task.cancel()
+            self._deferred_temp_push_task = None
+        
+        self._deferred_temp_push_task = self.hass.async_create_task(
+            self._deferred_temp_push_loop(delay),
+            name=f"{DOMAIN}_deferred_temp_push",
+        )
+
+    async def _deferred_temp_push_loop(self, delay: float) -> None:
+        """Wait for the rate limit window to end, then push the pending temperature."""
+        try:
+            await asyncio.sleep(delay)
+            if self._pending_temp_value is not None and not self.persisted_sleep:
+                value = self._pending_temp_value
+                self._pending_temp_value = None
+                # Re-check if value still differs from last pushed
+                if (
+                    self._last_pushed_t is None
+                    or abs(value - self._last_pushed_t) >= TEMPERATURE_PUSH_DELTA
+                ):
+                    await self._do_temperature_push(value)
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._deferred_temp_push_task = None
+
+    async def _do_temperature_push(self, value: float) -> None:
+        """Actually push a temperature value to the probe."""
         async with self._hold_lock:
             await self._command(f"T,{value:.2f}", ignore_error=True)
             self._last_pushed_t = value
-            self._last_temp_push_at = now
+            self._last_temp_push_at = time.monotonic()
             await self._command("T,?", ignore_error=True)
 
     async def _async_push_temperature(self, *, hold_stream: bool = True) -> None:
@@ -1000,19 +1057,46 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         if not lines:
             return
         state = self.data.copy()
+        
+        # Determine if readings are allowed from this source:
+        # - R command response
+        # - Continuous stream (last_command is None and device is in continuous mode)
+        cmd_verb = (last_command or "").split(",", 1)[0].lower()
+        is_reading_source = (
+            cmd_verb == "r"
+            or (last_command is None and state.continuous is True)
+        )
+        
         for line in lines:
             self._raw_history.append(line.raw)
             if line.kind is LineKind.READING and line.value is not None:
-                if not is_valid_reading(line.value, self.profile.kind):
+                # CRITICAL: Only accept readings from R command or continuous stream
+                if not is_reading_source:
                     _LOGGER.debug(
-                        "EZO reading %s out of range for %s, rejected (counter=%d)",
-                        line.value,
-                        self.profile.kind,
+                        "Reading '%s' from non-reading command '%s' ignored",
+                        line.raw,
+                        last_command,
+                    )
+                    continue
+                
+                # Validate reading format and range
+                extended = state.extended_scale if self.profile.kind == "orp" else False
+                value, reason = validate_reading(
+                    line.raw,
+                    self.profile.kind,
+                    extended_scale=extended,
+                    context=f"from {last_command or 'continuous'}",
+                )
+                if value is None:
+                    _LOGGER.debug(
+                        "EZO reading rejected: %s (counter=%d)",
+                        reason,
                         state.rejected_readings + 1,
                     )
                     state.rejected_readings += 1
                     continue
-                raw_value = line.value
+                
+                raw_value = value
                 state.reading_raw = raw_value
                 if self.mode == MODE_EXPLOITATION:
                     filtered = self._filter.push(raw_value)

@@ -68,6 +68,12 @@ class TestPhValidation:
         """None pH readings should be rejected."""
         assert validation.is_valid_reading(None, "ph") is False
 
+    def test_ph_always_0_14_even_with_extended_scale(self) -> None:
+        """pH range is ALWAYS 0-14, even when extended_scale is True."""
+        assert validation.is_valid_reading(14.0, "ph", extended_scale=True) is True
+        assert validation.is_valid_reading(14.01, "ph", extended_scale=True) is False
+        assert validation.is_valid_reading(-0.01, "ph", extended_scale=True) is False
+
 
 class TestOrpValidation:
     """Test ORP reading validation (-1019.9 to 1019.9 mV)."""
@@ -95,6 +101,14 @@ class TestOrpValidation:
     def test_invalid_orp_none(self) -> None:
         """None ORP readings should be rejected."""
         assert validation.is_valid_reading(None, "orp") is False
+
+    def test_orp_extended_scale_allows_wider_range(self) -> None:
+        """ORP with extended_scale=True allows ±2000 mV."""
+        assert validation.is_valid_reading(1500.0, "orp", extended_scale=True) is True
+        assert validation.is_valid_reading(-1500.0, "orp", extended_scale=True) is True
+        assert validation.is_valid_reading(2000.0, "orp", extended_scale=True) is True
+        assert validation.is_valid_reading(-2000.0, "orp", extended_scale=True) is True
+        assert validation.is_valid_reading(2001.0, "orp", extended_scale=True) is False
 
 
 class TestTemperatureValidation:
@@ -175,6 +189,97 @@ class TestVoltageValidation:
         assert validation.is_valid_voltage(None) is False
 
 
+class TestReadingFormatValidation:
+    """Test that reading format validation works correctly.
+    
+    Atlas EZO format requirements:
+    - pH: exactly 3 decimal places (e.g., 7.012)
+    - ORP: exactly 1 decimal place (e.g., 754.7)
+    - No leading zeros (e.g., reject 0013, 007.012)
+    """
+
+    def test_valid_ph_format(self) -> None:
+        """Valid pH format: exactly 3 decimal places."""
+        assert validation.is_valid_reading_format("7.012", "ph") is True
+        assert validation.is_valid_reading_format("0.000", "ph") is True
+        assert validation.is_valid_reading_format("14.000", "ph") is True
+        assert validation.is_valid_reading_format("-1.234", "ph") is True
+
+    def test_invalid_ph_format_wrong_decimals(self) -> None:
+        """pH with wrong number of decimals should be rejected."""
+        assert validation.is_valid_reading_format("7.0", "ph") is False
+        assert validation.is_valid_reading_format("7.01", "ph") is False
+        assert validation.is_valid_reading_format("7.0123", "ph") is False
+        assert validation.is_valid_reading_format("7", "ph") is False
+
+    def test_invalid_ph_format_leading_zeros(self) -> None:
+        """pH with leading zeros should be rejected."""
+        assert validation.is_valid_reading_format("007.012", "ph") is False
+        assert validation.is_valid_reading_format("0013", "ph") is False
+        assert validation.is_valid_reading_format("00.123", "ph") is False
+
+    def test_valid_orp_format(self) -> None:
+        """Valid ORP format: exactly 1 decimal place."""
+        assert validation.is_valid_reading_format("754.7", "orp") is True
+        assert validation.is_valid_reading_format("0.0", "orp") is True
+        assert validation.is_valid_reading_format("-500.5", "orp") is True
+        assert validation.is_valid_reading_format("1019.9", "orp") is True
+
+    def test_invalid_orp_format_wrong_decimals(self) -> None:
+        """ORP with wrong number of decimals should be rejected."""
+        assert validation.is_valid_reading_format("754", "orp") is False
+        assert validation.is_valid_reading_format("754.75", "orp") is False
+        assert validation.is_valid_reading_format("754.757", "orp") is False
+
+    def test_invalid_orp_format_leading_zeros(self) -> None:
+        """ORP with leading zeros should be rejected."""
+        assert validation.is_valid_reading_format("0700", "orp") is False
+        assert validation.is_valid_reading_format("0700.5", "orp") is False
+
+    def test_validate_reading_full(self) -> None:
+        """Full validate_reading function with format + range check."""
+        # Valid pH
+        value, reason = validation.validate_reading("7.012", "ph")
+        assert value == 7.012
+        assert reason is None
+        
+        # Invalid format (only 1 decimal for pH)
+        value, reason = validation.validate_reading("7.0", "ph")
+        assert value is None
+        assert "format" in reason.lower()
+        
+        # Valid format but out of range
+        value, reason = validation.validate_reading("15.000", "ph")
+        assert value is None
+        assert "out of range" in reason.lower()
+
+    def test_normalize_negative_zero(self) -> None:
+        """Negative zero should be normalized to 0.0."""
+        assert validation.normalize_reading(-0.0) == 0.0
+        assert validation.normalize_reading(0.0) == 0.0
+        assert validation.normalize_reading(7.0) == 7.0
+
+
+class TestSlopeOffsetValidation:
+    """Test slope offset validation (±60 mV)."""
+
+    def test_valid_slope_offset(self) -> None:
+        """Valid slope offsets within ±60 mV should pass."""
+        assert validation.is_valid_slope_offset(0.0) is True
+        assert validation.is_valid_slope_offset(30.0) is True
+        assert validation.is_valid_slope_offset(-30.0) is True
+        assert validation.is_valid_slope_offset(60.0) is True
+        assert validation.is_valid_slope_offset(-60.0) is True
+
+    def test_invalid_slope_offset(self) -> None:
+        """Slope offsets outside ±60 mV should be rejected."""
+        assert validation.is_valid_slope_offset(60.1) is False
+        assert validation.is_valid_slope_offset(-60.1) is False
+        assert validation.is_valid_slope_offset(999.0) is False
+        assert validation.is_valid_slope_offset(-999.0) is False
+        assert validation.is_valid_slope_offset(None) is False
+
+
 class TestExportHexRejection:
     """Test that Export hex lines don't get parsed as readings.
     
@@ -185,39 +290,45 @@ class TestExportHexRejection:
     ...
     
     These hex values should never be parsed as readings.
+    
+    CRITICAL: Readings may ONLY come from R command or continuous stream,
+    so Export replies should never even be attempted to parse as readings.
     """
 
-    def test_export_hex_not_valid_ph(self) -> None:
-        """Export hex parsed as numbers should be out of pH range.
-        
-        Note: 0x0000 = 0 is technically valid pH, but real export data
-        contains calibration hex that parses to large integers.
-        """
-        hex_values = ["9E6B", "2A1F", "FFFF", "1234", "ABCD"]
-        for hex_str in hex_values:
-            try:
-                value = int(hex_str, 16)
-                assert validation.is_valid_reading(float(value), "ph") is False, (
-                    f"Hex {hex_str} = {value} should be rejected for pH"
-                )
-            except ValueError:
-                pass
+    def test_export_hex_wrong_format_for_ph(self) -> None:
+        """Export hex lines don't match pH format (3 decimals)."""
+        export_lines = ["000000000000", "000000000007", "0013", "9E6B", "2A1F"]
+        for line in export_lines:
+            assert validation.is_valid_reading_format(line, "ph") is False, (
+                f"Export line '{line}' should fail pH format check"
+            )
 
-    def test_export_hex_not_valid_orp(self) -> None:
-        """Export hex parsed as numbers should be out of ORP range."""
-        hex_values = ["9E6B", "2A1F", "FFFF", "1234"]
-        for hex_str in hex_values:
-            try:
-                value = int(hex_str, 16)
-                assert validation.is_valid_reading(float(value), "orp") is False, (
-                    f"Hex {hex_str} = {value} should be rejected for ORP"
-                )
-            except ValueError:
-                pass
+    def test_export_hex_wrong_format_for_orp(self) -> None:
+        """Export hex lines don't match ORP format (1 decimal)."""
+        export_lines = ["0700", "9E6B", "2A1F", "FFFF"]
+        for line in export_lines:
+            assert validation.is_valid_reading_format(line, "orp") is False, (
+                f"Export line '{line}' should fail ORP format check"
+            )
+
+    def test_export_full_validation_rejects_hex(self) -> None:
+        """Full validation rejects export hex lines."""
+        # These would have been accepted as valid values before format check
+        value, reason = validation.validate_reading("000000000007", "ph")
+        assert value is None
+        assert "format" in reason.lower()
+        
+        value, reason = validation.validate_reading("0700", "orp")
+        assert value is None
+        assert "format" in reason.lower()
 
 
 class TestCalImportRejection:
-    """Test that Cal/Import command replies don't corrupt sensor values."""
+    """Test that Cal/Import command replies don't corrupt sensor values.
+    
+    CRITICAL: Readings may ONLY come from R command or continuous stream.
+    Cal, Import, Export, Slope, T, Status replies must NEVER be parsed as readings.
+    """
 
     def test_cal_ok_response_not_valid_reading(self) -> None:
         """*OK response shouldn't be parsed as a reading."""
@@ -229,6 +340,80 @@ class TestCalImportRejection:
         for value in garbage_values:
             assert validation.is_valid_reading(value, "ph") is False
             assert validation.is_valid_reading(value, "orp") is False
+
+    def test_short_garbage_lines_wrong_format(self) -> None:
+        """Short garbage lines should fail format validation."""
+        garbage = ["7", "75", "-3.2", "14", "0", "-0"]
+        for line in garbage:
+            # These might be in valid value range, but wrong format
+            ph_valid = validation.is_valid_reading_format(line, "ph")
+            orp_valid = validation.is_valid_reading_format(line, "orp")
+            assert not ph_valid, f"'{line}' should fail pH format (need 3 decimals)"
+            # Some may pass ORP format if they have 1 decimal
+            if "." not in line:
+                assert not orp_valid, f"'{line}' should fail ORP format (need 1 decimal)"
+
+    def test_cal_multiline_reply_example(self) -> None:
+        """Multi-line Cal reply should not contain valid readings.
+        
+        Example Cal reply:
+        ?Cal,2
+        *OK
+        
+        Neither line should pass reading validation.
+        """
+        cal_lines = ["?Cal,2", "*OK", "OK"]
+        for line in cal_lines:
+            assert validation.is_valid_reading_format(line, "ph") is False
+            assert validation.is_valid_reading_format(line, "orp") is False
+
+    def test_export_multiline_reply_example(self) -> None:
+        """Multi-line Export reply should not contain valid readings.
+        
+        Example Export reply:
+        ?Export,8
+        9E6B2A1F
+        12345678
+        *DONE
+        
+        These are calibration data, not readings.
+        """
+        export_lines = ["?Export,8", "9E6B2A1F", "12345678", "*DONE", "000000000007"]
+        for line in export_lines:
+            value, reason = validation.validate_reading(line, "ph")
+            assert value is None, f"Export line '{line}' should be rejected"
+
+    def test_import_multiline_reply_example(self) -> None:
+        """Multi-line Import reply should not contain valid readings.
+        
+        Example Import reply with echo:
+        Import,9E6B
+        *OK
+        """
+        import_lines = ["Import,9E6B", "*OK", "9E6B"]
+        for line in import_lines:
+            value, reason = validation.validate_reading(line, "ph")
+            assert value is None, f"Import line '{line}' should be rejected"
+
+    def test_slope_reply_not_reading(self) -> None:
+        """Slope query reply should not be parsed as reading.
+        
+        Example: ?Slope,99.7,100.3,-0.89
+        """
+        slope_lines = ["?Slope,99.7,100.3,-0.89", "99.7,100.3,-0.89"]
+        for line in slope_lines:
+            value, reason = validation.validate_reading(line, "ph")
+            assert value is None
+
+    def test_status_reply_not_reading(self) -> None:
+        """Status query reply should not be parsed as reading.
+        
+        Example: ?Status,P,5.023
+        """
+        status_lines = ["?Status,P,5.023", "P,5.023"]
+        for line in status_lines:
+            value, reason = validation.validate_reading(line, "ph")
+            assert value is None
 
 
 class TestGarbageLineRejection:

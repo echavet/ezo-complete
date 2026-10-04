@@ -9,7 +9,7 @@ from typing import Any
 
 from ..codec import ParsedLine, parse_flag, parse_slope, parse_temperature
 from ..models import EzoDeviceState
-from ..validation import is_valid_slope, is_valid_temperature
+from ..validation import is_valid_slope, is_valid_slope_offset, is_valid_temperature
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -147,7 +147,21 @@ class ProbeProfile(ABC):
                 else:
                     state.slope_base = None
                 
-                state.slope_offset = slope[2] if len(slope) > 2 else None
+                if len(slope) > 2:
+                    try:
+                        offset_val = float(slope[2])
+                        if is_valid_slope_offset(offset_val):
+                            state.slope_offset = slope[2]
+                        else:
+                            _LOGGER.debug(
+                                "Slope offset %s out of range [-60, 60], rejected",
+                                offset_val,
+                            )
+                            state.rejected_readings += 1
+                    except (ValueError, TypeError):
+                        state.rejected_readings += 1
+                else:
+                    state.slope_offset = None
             return True
         return False
 
