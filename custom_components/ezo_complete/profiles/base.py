@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
 from ..codec import ParsedLine, parse_flag, parse_slope, parse_temperature
 from ..models import EzoDeviceState
+from ..validation import is_valid_slope, is_valid_temperature
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,7 +89,11 @@ class ProbeProfile(ABC):
         return attrs
 
     def apply_query(self, state: EzoDeviceState, line: ParsedLine) -> bool:
-        """Handle a probe-specific `?Key` line. Return True if consumed."""
+        """Handle a probe-specific `?Key` line. Return True if consumed.
+        
+        Validates all numeric values; out-of-range values are rejected and
+        increment state.rejected_readings.
+        """
         key = (line.query_key or "").lower()
         if key == self.extended_command.lower():
             flag = parse_flag(line.raw, key)
@@ -97,13 +105,48 @@ class ProbeProfile(ABC):
         if key == "t":
             temp = parse_temperature(line.raw)
             if temp is not None:
-                state.temperature = temp
+                if is_valid_temperature(temp):
+                    state.temperature = temp
+                else:
+                    _LOGGER.debug(
+                        "Temperature %s out of range [-5, 60], rejected (counter=%d)",
+                        temp,
+                        state.rejected_readings + 1,
+                    )
+                    state.rejected_readings += 1
             return True
         if key == "slope":
             slope = parse_slope(line.raw)
             if slope:
-                state.slope_acid = slope[0]
-                state.slope_base = slope[1] if len(slope) > 1 else None
+                try:
+                    acid_val = float(slope[0])
+                    if is_valid_slope(acid_val):
+                        state.slope_acid = slope[0]
+                    else:
+                        _LOGGER.debug(
+                            "Slope acid %s out of range [0, 200], rejected",
+                            acid_val,
+                        )
+                        state.rejected_readings += 1
+                except (ValueError, TypeError):
+                    state.rejected_readings += 1
+                
+                if len(slope) > 1:
+                    try:
+                        base_val = float(slope[1])
+                        if is_valid_slope(base_val):
+                            state.slope_base = slope[1]
+                        else:
+                            _LOGGER.debug(
+                                "Slope base %s out of range [0, 200], rejected",
+                                base_val,
+                            )
+                            state.rejected_readings += 1
+                    except (ValueError, TypeError):
+                        state.rejected_readings += 1
+                else:
+                    state.slope_base = None
+                
                 state.slope_offset = slope[2] if len(slope) > 2 else None
             return True
         return False

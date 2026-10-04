@@ -49,6 +49,7 @@ class EzoDeviceState:
     stability_effective_window: float | None = None
     filter_type: str | None = None
     filter_window: int | None = None
+    rejected_readings: int = 0
 
     @property
     def slope_text(self) -> str | None:

@@ -27,7 +27,6 @@ from .codec import (
     command_succeeded,
     compact_export_dump,
     is_export_data_line,
-    is_reading_in_range,
     is_usb_product_name,
     parse_cal_points,
     parse_continuous,
@@ -37,6 +36,13 @@ from .codec import (
     parse_name,
     parse_status,
     resolve_display_name,
+)
+from .validation import (
+    ValueType,
+    is_valid_reading,
+    is_valid_slope,
+    is_valid_temperature,
+    is_valid_voltage,
 )
 from .const import (
     CONF_BAUDRATE,
@@ -997,12 +1003,14 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         for line in lines:
             self._raw_history.append(line.raw)
             if line.kind is LineKind.READING and line.value is not None:
-                if not is_reading_in_range(line.value, self.profile.kind):
+                if not is_valid_reading(line.value, self.profile.kind):
                     _LOGGER.debug(
-                        "EZO reading %s out of range for %s, ignoring",
+                        "EZO reading %s out of range for %s, rejected (counter=%d)",
                         line.value,
                         self.profile.kind,
+                        state.rejected_readings + 1,
                     )
+                    state.rejected_readings += 1
                     continue
                 raw_value = line.value
                 state.reading_raw = raw_value
@@ -1082,7 +1090,16 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             if status:
                 state.status_reason = status.reason
                 state.status_reason_code = status.reason_code
-                state.status_voltage = status.voltage
+                if status.voltage is not None:
+                    if is_valid_voltage(status.voltage):
+                        state.status_voltage = status.voltage
+                    else:
+                        _LOGGER.debug(
+                            "Status voltage %s out of range [0, 6], rejected (counter=%d)",
+                            status.voltage,
+                            state.rejected_readings + 1,
+                        )
+                        state.rejected_readings += 1
         elif key == "name":
             name = parse_name(raw)
             if name is not None:
