@@ -82,6 +82,7 @@ from .export_store import ExportStore
 from .filter import ReadingFilter
 from .models import EzoDeviceState
 from .profiles import ProbeProfile, profile_for
+from .registry import async_get_entry_device
 from .session import EzoClientError, EzoUnsupportedError, SerialSession
 from .stability import StabilityWindow
 
@@ -1106,7 +1107,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             self.hass.config_entries.async_update_entry(
                 self.entry, title=name, data={**self.entry.data, CONF_NAME: name}
             )
-        registry = dr.async_get(self.hass)
-        device = registry.async_get_device(identifiers={(DOMAIN, self.unique_id)})
+        device = async_get_entry_device(self.hass, self.entry.entry_id, self.unique_id)
         if device is not None and device.name_by_user is None and device.name != name:
+            registry = dr.async_get(self.hass)
             registry.async_update_device(device.id, name=name)

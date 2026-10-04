@@ -18,6 +18,7 @@ from homeassistant.helpers.typing import ConfigType
 from .codec import unique_id_from_serial
 from .const import CONF_DEVICE_TYPE, CONF_SERIAL_NUMBER, DOMAIN, PLATFORMS
 from .coordinator import EzoCoordinator
+from .registry import async_get_entry_device
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def async_migrate_unique_id(
     ent_reg = er.async_get(hass)
     dev_reg = dr.async_get(hass)
 
-    old_device = dev_reg.async_get_device(identifiers={(DOMAIN, old_unique_id)})
+    old_device = async_get_entry_device(hass, config_entry.entry_id, old_unique_id)
     if old_device:
         _LOGGER.debug(
             "Updating device %s identifiers: %s -> %s",

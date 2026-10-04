@@ -21,7 +21,7 @@ Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch i
   - Filter type: none/median/mean (default: median).
   - Filter window: 1-20 samples (default: 5).
   - Main sensor publishes filtered value with `raw_value` attribute.
-  - Separate raw sensor (disabled by default) for unfiltered readings.
+  - Separate raw sensor (enabled by default) for unfiltered readings.
 
 - **pH stability independent of calibration**:
   - Stability is now judged in mV-equivalent using the probe slope (Slope,?).
@@ -45,7 +45,7 @@ Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch i
 
 ### Fixed
 
-- **Deprecated `device_registry.async_get_device`**: Updated to use the correct API signature.
+- **Deprecated `device_registry.async_get_device`**: Replaced with new `async_get_entry_device` helper that uses `async_get_device_by_identifier(identifier, config_entry_id)` on HA 2026.8+, falling back to `async_get_device(identifiers=...)` on older cores (hacs.json minimum is 2026.5.0).
 
 ## [2026.10.4] - 2026-10-04
 
