@@ -69,7 +69,8 @@ CONF_MODE = "mode"
 CONF_MEASUREMENT_INTERVAL = "measurement_interval"
 CONF_FILTER_TYPE = "filter_type"
 CONF_FILTER_WINDOW = "filter_window"
-CONF_CALIBRATION_INTERVAL = "calibration_interval"
+# NOTE: continuous_interval key kept for entity unique_id stability (approved design)
+CONF_CONTINUOUS_INTERVAL = "continuous_interval"
 CONF_CALIBRATION_AUTO_RETURN = "calibration_auto_return"
 CONF_STABILITY_WINDOW = "stability_window"
 CONF_STABILITY_MAX_SPAN = "stability_max_span"
@@ -78,7 +79,6 @@ CONF_SLEEP = "sleep"
 # Legacy keys (for migration only)
 CONF_UPDATE_INTERVAL = "update_interval"
 CONF_CONTINUOUS_ON_START = "continuous_on_start"
-CONF_CONTINUOUS_INTERVAL = "continuous_interval"
 
 # Ranges
 MEASUREMENT_INTERVAL_MIN = 5

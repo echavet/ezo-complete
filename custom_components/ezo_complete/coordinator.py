@@ -41,7 +41,7 @@ from .codec import (
 from .const import (
     CONF_BAUDRATE,
     CONF_CALIBRATION_AUTO_RETURN,
-    CONF_CALIBRATION_INTERVAL,
+    CONF_CONTINUOUS_INTERVAL,
     CONF_DEVICE_TYPE,
     CONF_FILTER_TYPE,
     CONF_FILTER_WINDOW,
@@ -116,6 +116,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._reconnect_task: asyncio.Task[None] | None = None
         self._temp_unsub = None
         self._options_unsub = None
+        self._prev_options: dict = dict(entry.options)
         self._unavailable_logged = False
         self._factory_armed_until = 0.0
         self._raw_history: deque[str] = deque(maxlen=RAW_LINE_HISTORY)
@@ -172,7 +173,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
 
     @property
     def calibration_interval(self) -> int:
-        return int(self.entry.options.get(CONF_CALIBRATION_INTERVAL, DEFAULT_CALIBRATION_INTERVAL))
+        return int(self.entry.options.get(CONF_CONTINUOUS_INTERVAL, DEFAULT_CALIBRATION_INTERVAL))
 
     @property
     def calibration_auto_return(self) -> int:
@@ -275,21 +276,60 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
     async def _async_options_updated(
         self, hass: HomeAssistant, entry: ConfigEntry
     ) -> None:
-        """Handle options update - apply changes immediately without reload."""
-        self._filter.configure(self.filter_type, self.filter_window)
-        self._stability = StabilityWindow(
-            window_s=self.stability_window,
-            min_samples=STABILITY_MIN_SAMPLES,
-            span_threshold_mv=self.stability_max_span,
-            interval_s=float(self.calibration_interval),
-            min_samples_floor=STABILITY_MIN_SAMPLES_FLOOR,
-            min_samples_ceiling=STABILITY_MIN_SAMPLES_CEILING,
-            to_mv_fn=self._ph_span_to_mv if self.profile.kind == "ph" else None,
-        )
-        if self.mode == MODE_EXPLOITATION:
+        """Handle options update - apply changes immediately without reload.
+
+        Only reacts to relevant option changes (not data-only changes like port/title).
+        """
+        new_opts = entry.options
+        old_opts = getattr(self, "_prev_options", {})
+
+        relevant_keys = {
+            CONF_MODE, CONF_MEASUREMENT_INTERVAL, CONF_FILTER_TYPE, CONF_FILTER_WINDOW,
+            CONF_CONTINUOUS_INTERVAL, CONF_STABILITY_WINDOW, CONF_STABILITY_MAX_SPAN,
+            CONF_CALIBRATION_AUTO_RETURN, CONF_SLEEP, CONF_TEMPERATURE_ENTITY,
+        }
+        changed = {k for k in relevant_keys if new_opts.get(k) != old_opts.get(k)}
+        self._prev_options = dict(new_opts)
+
+        if not changed:
+            return
+
+        if CONF_FILTER_TYPE in changed or CONF_FILTER_WINDOW in changed:
+            self._filter.configure(self.filter_type, self.filter_window)
+
+        stability_changed = changed & {
+            CONF_STABILITY_WINDOW, CONF_STABILITY_MAX_SPAN, CONF_CONTINUOUS_INTERVAL,
+            CONF_MEASUREMENT_INTERVAL,
+        }
+        if stability_changed:
+            active_interval = (
+                float(self.calibration_interval)
+                if self.mode == MODE_CALIBRATION
+                else float(self.measurement_interval)
+            )
+            self._stability = StabilityWindow(
+                window_s=self.stability_window,
+                min_samples=STABILITY_MIN_SAMPLES,
+                span_threshold_mv=self.stability_max_span,
+                interval_s=active_interval,
+                min_samples_floor=STABILITY_MIN_SAMPLES_FLOOR,
+                min_samples_ceiling=STABILITY_MIN_SAMPLES_CEILING,
+                to_mv_fn=self._ph_span_to_mv if self.profile.kind == "ph" else None,
+            )
+
+        if CONF_MEASUREMENT_INTERVAL in changed and self.mode == MODE_EXPLOITATION:
             self.update_interval = timedelta(seconds=self.measurement_interval)
-        self._reset_auto_return_timer()
-        self._retrack_temperature()
+
+        if CONF_CONTINUOUS_INTERVAL in changed and self.mode == MODE_CALIBRATION:
+            await self._command(f"C,{self.calibration_interval}", ignore_error=True)
+            await self._command("C,?", ignore_error=True)
+
+        if CONF_CALIBRATION_AUTO_RETURN in changed:
+            self._reset_auto_return_timer()
+
+        if CONF_TEMPERATURE_ENTITY in changed:
+            self._retrack_temperature()
+
         self.async_update_listeners()
 
     def _retrack_temperature(self) -> None:
@@ -331,11 +371,24 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             self._start_auto_return_timer()
             _LOGGER.info("Switched to calibration mode (C,%d)", interval)
         else:
+            await self._do_switch_to_exploitation(from_auto_return=False)
+
+    async def _do_switch_to_exploitation(self, *, from_auto_return: bool) -> None:
+        """Internal helper to switch to exploitation mode.
+
+        When called from auto-return loop, we must not cancel the current task.
+        """
+        if not from_auto_return:
             self._cancel_auto_return_timer()
-            await self._command("C,0", ignore_error=True)
-            await self._command("C,?", ignore_error=True)
-            self.update_interval = timedelta(seconds=self.measurement_interval)
-            _LOGGER.info("Switched to exploitation mode (polling %d s)", self.measurement_interval)
+        else:
+            self._auto_return_task = None
+            self._auto_return_deadline = 0.0
+
+        await self._update_options({CONF_MODE: MODE_EXPLOITATION})
+        await self._command("C,0", ignore_error=True)
+        await self._command("C,?", ignore_error=True)
+        self.update_interval = timedelta(seconds=self.measurement_interval)
+        _LOGGER.info("Switched to exploitation mode (polling %d s)", self.measurement_interval)
 
     async def _update_options(self, updates: dict) -> None:
         """Update entry.options and trigger listeners."""
@@ -375,13 +428,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 await asyncio.sleep(min(remaining, 10))
             if self.mode == MODE_CALIBRATION:
                 _LOGGER.info("Auto-return: switching back to exploitation mode")
-                await self.async_set_mode(MODE_EXPLOITATION)
+                await self._do_switch_to_exploitation(from_auto_return=True)
         except asyncio.CancelledError:
             pass
 
     async def _async_update_data(self) -> EzoDeviceState:
         if not self.session.connected:
             raise UpdateFailed("EZO Complete is disconnected")
+        if self.persisted_sleep:
+            return self.data
         try:
             if self.mode == MODE_EXPLOITATION:
                 await self._async_push_temperature()
@@ -397,7 +452,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
 
     async def async_set_calibration_interval(self, seconds: int) -> None:
         """Update calibration interval setting."""
-        await self._update_options({CONF_CALIBRATION_INTERVAL: int(seconds)})
+        await self._update_options({CONF_CONTINUOUS_INTERVAL: int(seconds)})
         if self.mode == MODE_CALIBRATION:
             await self._command(f"C,{int(seconds)}")
             await self._command("C,?")
@@ -428,6 +483,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
 
     def set_cal_setpoint(self, slot: str, value: float) -> None:
         self.cal_setpoints[slot] = value
+        self._reset_auto_return_timer()
 
     async def async_calibrate(self, slot: str) -> None:
         value = self.cal_setpoint(slot)

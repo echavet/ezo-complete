@@ -62,5 +62,6 @@ class EzoBinarySensor(EzoEntity, BinarySensorEntity):
             "span_mv": data.stability_span_mv,
             "samples": data.stability_samples,
             "required_samples": data.stability_required,
+            "span_threshold": data.stability_span_threshold,
             "threshold_mv": data.stability_span_threshold,
         }

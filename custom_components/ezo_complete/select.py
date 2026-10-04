@@ -21,6 +21,20 @@ from .entity import EzoEntity
 
 PARALLEL_UPDATES = 0
 
+MODE_DESCRIPTION = SelectEntityDescription(
+    key="mode",
+    translation_key="mode",
+    entity_category=EntityCategory.CONFIG,
+    options=[MODE_EXPLOITATION, MODE_CALIBRATION],
+)
+
+FILTER_TYPE_DESCRIPTION = SelectEntityDescription(
+    key="filter_type",
+    translation_key="filter_type",
+    entity_category=EntityCategory.CONFIG,
+    options=[FILTER_NONE, FILTER_MEDIAN, FILTER_MEAN],
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -37,12 +51,10 @@ async def async_setup_entry(
 class EzoModeSelect(EzoEntity, SelectEntity):
     """Select entity for operating mode (Exploitation / Calibration)."""
 
-    entity_description = SelectEntityDescription(
-        key="mode",
-        translation_key="mode",
-        entity_category=EntityCategory.CONFIG,
-        options=[MODE_EXPLOITATION, MODE_CALIBRATION],
-    )
+    entity_description = MODE_DESCRIPTION
+
+    def __init__(self, coordinator: EzoCoordinator) -> None:
+        super().__init__(coordinator, MODE_DESCRIPTION)
 
     @property
     def current_option(self) -> str:
@@ -61,12 +73,10 @@ class EzoModeSelect(EzoEntity, SelectEntity):
 class EzoFilterTypeSelect(EzoEntity, SelectEntity):
     """Select entity for reading filter type."""
 
-    entity_description = SelectEntityDescription(
-        key="filter_type",
-        translation_key="filter_type",
-        entity_category=EntityCategory.CONFIG,
-        options=[FILTER_NONE, FILTER_MEDIAN, FILTER_MEAN],
-    )
+    entity_description = FILTER_TYPE_DESCRIPTION
+
+    def __init__(self, coordinator: EzoCoordinator) -> None:
+        super().__init__(coordinator, FILTER_TYPE_DESCRIPTION)
 
     @property
     def current_option(self) -> str:

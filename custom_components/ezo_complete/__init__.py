@@ -95,7 +95,6 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     """
     from .const import (
         CONF_CALIBRATION_AUTO_RETURN,
-        CONF_CALIBRATION_INTERVAL,
         CONF_CONTINUOUS_INTERVAL,
         CONF_CONTINUOUS_ON_START,
         CONF_FILTER_TYPE,
@@ -157,7 +156,7 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             CONF_MEASUREMENT_INTERVAL: max(5, old_update_interval),
             CONF_FILTER_TYPE: DEFAULT_FILTER_TYPE,
             CONF_FILTER_WINDOW: DEFAULT_FILTER_WINDOW,
-            CONF_CALIBRATION_INTERVAL: old_continuous_interval,
+            CONF_CONTINUOUS_INTERVAL: old_continuous_interval,
             CONF_STABILITY_WINDOW: DEFAULT_STABILITY_WINDOW,
             CONF_STABILITY_MAX_SPAN: (
                 DEFAULT_PH_STABILITY_SPAN_MV if kind == "ph" else DEFAULT_ORP_STABILITY_SPAN
@@ -175,6 +174,21 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             version=3,
             minor_version=0,
         )
+
+        ent_reg = er.async_get(hass)
+        unique_id = config_entry.unique_id
+        if unique_id:
+            orphaned_suffixes = ["_continuous"]
+            for suffix in orphaned_suffixes:
+                orphan_uid = f"{unique_id}{suffix}"
+                orphan_entity = ent_reg.async_get_entity_id("switch", DOMAIN, orphan_uid)
+                if orphan_entity:
+                    _LOGGER.info(
+                        "Removing orphaned entity %s (unique_id=%s)",
+                        orphan_entity,
+                        orphan_uid,
+                    )
+                    ent_reg.async_remove(orphan_entity)
 
     return True
 

@@ -39,10 +39,18 @@ from homeassistant.helpers.selector import (
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
-    SerialPortSelector,
     TextSelector,
 )
-from homeassistant.helpers.service_info.usb import UsbServiceInfo
+
+try:
+    from homeassistant.helpers.selector import SerialPortSelector
+except ImportError:
+    SerialPortSelector = None
+
+try:
+    from homeassistant.helpers.service_info.usb import UsbServiceInfo
+except ImportError:
+    from homeassistant.components.usb import UsbServiceInfo
 
 from .codec import unique_id_from_serial
 from .const import (
@@ -51,7 +59,6 @@ from .const import (
     CALIBRATION_AUTO_RETURN_MIN,
     CONF_BAUDRATE,
     CONF_CALIBRATION_AUTO_RETURN,
-    CONF_CALIBRATION_INTERVAL,
     CONF_CONTINUOUS_INTERVAL,
     CONF_CONTINUOUS_ON_START,
     CONF_DEVICE_TYPE,
@@ -174,12 +181,13 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
                 )
                 return self._async_build_entry(port, baudrate, name)
 
+        port_selector = SerialPortSelector() if SerialPortSelector else TextSelector()
         return self.async_show_form(
             step_id="user",
             data_schema=self.add_suggested_values_to_schema(
                 vol.Schema(
                     {
-                        vol.Required(CONF_PORT): SerialPortSelector(),
+                        vol.Required(CONF_PORT): port_selector,
                         vol.Optional(
                             CONF_BAUDRATE, default=str(DEFAULT_BAUDRATE)
                         ): SelectSelector(
@@ -302,12 +310,13 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
                         CONF_DEVICE_TYPE: self._device_type,
                     },
                 )
+        port_selector = SerialPortSelector() if SerialPortSelector else TextSelector()
         return self.async_show_form(
             step_id="reconfigure",
             data_schema=self.add_suggested_values_to_schema(
                 vol.Schema(
                     {
-                        vol.Required(CONF_PORT): SerialPortSelector(),
+                        vol.Required(CONF_PORT): port_selector,
                         vol.Optional(CONF_BAUDRATE): SelectSelector(
                             SelectSelectorConfig(
                                 options=[str(rate) for rate in BAUDRATES],
@@ -374,7 +383,7 @@ class EzoCompleteConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_MEASUREMENT_INTERVAL: DEFAULT_MEASUREMENT_INTERVAL,
                 CONF_FILTER_TYPE: DEFAULT_FILTER_TYPE,
                 CONF_FILTER_WINDOW: DEFAULT_FILTER_WINDOW,
-                CONF_CALIBRATION_INTERVAL: DEFAULT_CALIBRATION_INTERVAL,
+                CONF_CONTINUOUS_INTERVAL: DEFAULT_CALIBRATION_INTERVAL,
                 CONF_STABILITY_WINDOW: DEFAULT_STABILITY_WINDOW,
                 CONF_STABILITY_MAX_SPAN: (
                     DEFAULT_PH_STABILITY_SPAN_MV
@@ -401,7 +410,7 @@ class EzoCompleteOptionsFlow(OptionsFlow):
                 CONF_MEASUREMENT_INTERVAL: int(user_input[CONF_MEASUREMENT_INTERVAL]),
                 CONF_FILTER_TYPE: user_input[CONF_FILTER_TYPE],
                 CONF_FILTER_WINDOW: int(user_input[CONF_FILTER_WINDOW]),
-                CONF_CALIBRATION_INTERVAL: int(user_input[CONF_CALIBRATION_INTERVAL]),
+                CONF_CONTINUOUS_INTERVAL: int(user_input[CONF_CONTINUOUS_INTERVAL]),
                 CONF_STABILITY_WINDOW: float(user_input[CONF_STABILITY_WINDOW]),
                 CONF_STABILITY_MAX_SPAN: float(user_input[CONF_STABILITY_MAX_SPAN]),
                 CONF_CALIBRATION_AUTO_RETURN: int(
@@ -467,9 +476,9 @@ class EzoCompleteOptionsFlow(OptionsFlow):
                 )
             ),
             vol.Required(
-                CONF_CALIBRATION_INTERVAL,
+                CONF_CONTINUOUS_INTERVAL,
                 default=options.get(
-                    CONF_CALIBRATION_INTERVAL, DEFAULT_CALIBRATION_INTERVAL
+                    CONF_CONTINUOUS_INTERVAL, DEFAULT_CALIBRATION_INTERVAL
                 ),
             ): NumberSelector(
                 NumberSelectorConfig(
@@ -517,15 +526,20 @@ class EzoCompleteOptionsFlow(OptionsFlow):
         }
 
         if profile is not None and profile.supports_temperature:
-            schema[
-                vol.Optional(
-                    CONF_TEMPERATURE_ENTITY,
-                    default=options.get(CONF_TEMPERATURE_ENTITY),
+            current_temp_entity = options.get(CONF_TEMPERATURE_ENTITY)
+            if current_temp_entity:
+                schema[
+                    vol.Optional(CONF_TEMPERATURE_ENTITY, default=current_temp_entity)
+                ] = EntitySelector(
+                    EntitySelectorConfig(
+                        domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
+                    )
                 )
-            ] = EntitySelector(
-                EntitySelectorConfig(
-                    domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
+            else:
+                schema[vol.Optional(CONF_TEMPERATURE_ENTITY)] = EntitySelector(
+                    EntitySelectorConfig(
+                        domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
+                    )
                 )
-            )
 
         return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))

@@ -16,7 +16,7 @@ from .const import (
     CALIBRATION_AUTO_RETURN_MAX,
     CALIBRATION_AUTO_RETURN_MIN,
     CONF_CALIBRATION_AUTO_RETURN,
-    CONF_CALIBRATION_INTERVAL,
+    CONF_CONTINUOUS_INTERVAL,
     CONF_FILTER_WINDOW,
     CONF_MEASUREMENT_INTERVAL,
     CONF_STABILITY_MAX_SPAN,
@@ -116,13 +116,17 @@ class EzoCalSetpointNumber(EzoEntity, RestoreEntity, NumberEntity):
 
 
 class EzoCalibrationIntervalNumber(EzoEntity, NumberEntity):
-    """Calibration mode continuous interval (C,n seconds)."""
+    """Calibration mode continuous interval (C,n seconds).
+
+    NOTE: Entity key is 'continuous_interval' for unique_id stability.
+    Display name uses translation_key 'calibration_interval'.
+    """
 
     def __init__(self, coordinator: EzoCoordinator) -> None:
         super().__init__(
             coordinator,
             NumberEntityDescription(
-                key="calibration_interval",
+                key="continuous_interval",
                 translation_key="calibration_interval",
                 entity_category=EntityCategory.CONFIG,
                 native_min_value=CONTINUOUS_INTERVAL_MIN,

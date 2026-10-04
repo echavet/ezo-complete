@@ -71,14 +71,13 @@ def _reading_description(profile: ProbeProfile) -> EzoSensorEntityDescription:
 
 
 def _raw_reading_description(profile: ProbeProfile) -> EzoSensorEntityDescription:
-    """Raw (unfiltered) reading sensor - disabled by default."""
+    """Raw (unfiltered) reading sensor - enabled by default."""
     return EzoSensorEntityDescription(
         key=f"{profile.reading_key}_raw",
         translation_key=f"{profile.reading_key}_raw",
         native_unit_of_measurement=profile.reading_unit,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=profile.reading_precision,
-        entity_registry_enabled_default=False,
         value_fn=lambda s: s.reading_raw,
     )
 
