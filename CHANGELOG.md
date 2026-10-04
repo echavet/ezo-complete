@@ -6,7 +6,7 @@ Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch i
 
 ### Fixed
 
-- **Export hex lines parsed as readings**: During calibration export (`Export` command), hex payload lines (e.g. `010101000080`) were incorrectly parsed as pH readings, resulting in values like ~1.01e10 appearing in `sensor.ezo_ph_ph`. Now: readings are paused during export using the same hold/pause mechanism as calibration, and a validity range check rejects out-of-range values (pH -1.6..15.6, ORP -1019.9..1019.9 mV) with a debug log.
+- **Export hex lines parsed as readings**: During calibration export (`Export` command), hex payload lines (e.g. `010101000080`) were incorrectly parsed as pH readings, resulting in values like ~1.01e10 appearing in `sensor.ezo_ph_ph`. Now: readings are paused during export using the same hold/pause mechanism as calibration, and a validity range check rejects out-of-range values (pH -1.6..15.6, ORP -1020..1020 mV) with a debug log.
 
 - **Export date sensors missing device_class**: The `sensor.*_export_de_calibration` sensors now use `SensorDeviceClass.TIMESTAMP` and return a timezone-aware datetime instead of an ISO string. Home Assistant can now properly display and format the timestamp.
 
@@ -108,6 +108,7 @@ After upgrading, your existing entries will be migrated automatically. Entity ID
 - pH: mid/low/high calibration, slope, temperature compensation from a HA sensor entity.
 - Dated calibration archives + per-device restore file.
 
+[2026.10.4]: https://github.com/echavet/ezo-complete/releases/tag/2026.10.4
 [2026.9.28]: https://github.com/echavet/ezo-complete/releases/tag/2026.9.28
 [2026.8.26.6]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.6
 [2026.8.26.5]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.5
