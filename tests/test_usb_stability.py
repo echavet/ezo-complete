@@ -273,3 +273,107 @@ class TestMigrateUniqueIdHelper:
         new_uid = "ABC123_orp"
         
         assert old_uid == new_uid
+
+
+stability = _load("ezo_complete.stability", PKG / "stability.py")
+
+
+class TestPollingModeStability:
+    """Test stability window behavior in polling mode (continuous off)."""
+
+    def test_stability_with_polling_interval(self) -> None:
+        """With 5s polling interval, stability should be achievable with 3 samples."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span=0.05,
+            interval_s=5.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        assert window.required_samples == 3
+        
+        now = 100.0
+        for i in range(2):
+            snap = window.push(7.00, now + i * 5)
+            assert not snap.stable
+        
+        snap = window.push(7.00, now + 10)
+        assert snap.stable
+        assert snap.sample_count == 3
+
+    def test_stability_reset_clears_samples(self) -> None:
+        """reset() should clear accumulated samples."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span=0.05,
+            interval_s=5.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        
+        now = 100.0
+        for i in range(3):
+            window.push(7.00, now + i * 5)
+        
+        window.reset()
+        snap = window.push(7.00, now + 20)
+        assert snap.sample_count == 1
+        assert not snap.stable
+
+    def test_switch_continuous_to_polling_resets(self) -> None:
+        """Switching from continuous to polling should reset and use polling interval."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span=0.05,
+            interval_s=1.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        assert window.required_samples == 5
+        
+        now = 100.0
+        for i in range(5):
+            window.push(7.00, now + i)
+        
+        window.set_interval(5.0)
+        window.reset()
+        
+        assert window.required_samples == 3
+        
+        for i in range(3):
+            snap = window.push(7.00, now + 20 + i * 5)
+        
+        assert snap.stable
+        assert snap.sample_count == 3
+
+    def test_polling_interval_none_uses_base_samples(self) -> None:
+        """With interval_s=None, required_samples uses base min_samples."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span=0.05,
+            interval_s=None,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        assert window.required_samples == 5
+
+    def test_stability_unreachable_without_polling_interval(self) -> None:
+        """Without proper interval, fast reads are required for stability."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span=0.05,
+            interval_s=None,
+        )
+        
+        now = 100.0
+        for i in range(3):
+            snap = window.push(7.00, now + i * 5)
+        
+        assert snap.sample_count == 3
+        assert not snap.stable
+        assert snap.required_samples == 5

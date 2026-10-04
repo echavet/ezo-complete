@@ -6,7 +6,14 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 import re
 
-from .const import STATUS_REASON_MAP, SUPPORTED_KINDS
+from .const import (
+    ORP_READING_MAX,
+    ORP_READING_MIN,
+    PH_READING_MAX,
+    PH_READING_MIN,
+    STATUS_REASON_MAP,
+    SUPPORTED_KINDS,
+)
 
 CR = b"\r"
 CMD_TERMINATOR = "\r"
@@ -163,6 +170,17 @@ def reply_is_complete(lines: list[ParsedLine], command: str | None) -> bool:
     return False
 
 
+def is_calibration_command(command: str | None) -> bool:
+    """Return True if command is a Cal,<value> calibration command (not Cal,? or Cal,clear)."""
+    if not command:
+        return False
+    verb, _, arg = command.partition(",")
+    if verb.strip().lower() != "cal":
+        return False
+    arg_lower = arg.strip().lower()
+    return arg_lower not in {"?", "clear", ""}
+
+
 def command_succeeded(response: EzoResponse) -> bool:
     if response.error_code:
         return False
@@ -170,6 +188,10 @@ def command_succeeded(response: EzoResponse) -> bool:
     if kind is ReplyKind.SILENT:
         return True
     if kind is ReplyKind.ACK:
+        if is_calibration_command(response.command):
+            return response.ok and any(
+                line.status_code == "OK" for line in response.lines if line.kind is LineKind.STATUS
+            )
         return response.ok or not response.lines
     if kind is ReplyKind.QUERY:
         return response.query() is not None
@@ -178,6 +200,15 @@ def command_succeeded(response: EzoResponse) -> bool:
     if kind is ReplyKind.EXPORT:
         return bool(response.raw_lines)
     return response.ok
+
+
+def is_reading_in_range(value: float, kind: str) -> bool:
+    """Return True if the reading value is within the valid range for the device type."""
+    if kind == "ph":
+        return PH_READING_MIN <= value <= PH_READING_MAX
+    if kind == "orp":
+        return ORP_READING_MIN <= value <= ORP_READING_MAX
+    return True
 
 
 def encode_command(command: str) -> bytes:
