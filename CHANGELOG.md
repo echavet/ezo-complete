@@ -2,6 +2,51 @@
 
 Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch increments for hotfixes — not the calendar day). First release of this repo was `2026.8.26`; hotfixes are `2026.8.26.1`, `.2`, …
 
+## [2026.10.4.1] - 2026-10-04
+
+### Breaking Changes
+
+- **Mode select replaces continuous switch**: The `switch.continuous` entity is removed. Use the new `select.mode` entity to switch between Exploitation and Calibration modes.
+- **Config entry migration to v3**: Existing options (`update_interval`, `continuous_on_start`, `continuous_interval`) are automatically migrated to the new schema. No manual action required.
+
+### Added
+
+- **Exploitation/Calibration dual-mode UX**:
+  - **Exploitation mode**: HA-driven polling with configurable interval (5-3600 s) and optional median/mean filtering.
+  - **Calibration mode**: Atlas continuous mode (C,n) with stability gating for calibration buttons.
+  - Mode select entity (`select.mode`) to switch between modes.
+  - Auto-return timer (0-120 min, default 15) returns to exploitation after inactivity.
+
+- **Reading filtering** (Exploitation mode):
+  - Filter type: none/median/mean (default: median).
+  - Filter window: 1-20 samples (default: 5).
+  - Main sensor publishes filtered value with `raw_value` attribute.
+  - Separate raw sensor (enabled by default) for unfiltered readings.
+
+- **pH stability independent of calibration**:
+  - Stability is now judged in mV-equivalent using the probe slope (Slope,?).
+  - Uses acid slope below pH 7, base slope above pH 7, average otherwise.
+  - Factory calibration (cal_points=0) uses ideal 100% slope (59.16 mV/pH).
+  - Binary sensor exposes `span_mv` and `threshold_mv` attributes for dashboard feedback.
+
+- **Sleep state persistence**: Sleep is saved in `entry.options` and restored on startup/reconnect.
+
+- **Export timestamp restoration**: `export_at` is restored from the newest archive file on disk when the integration loads.
+
+- **New number entities** for runtime configuration:
+  - Measurement interval, Filter window, Calibration interval
+  - Stability window, Stability threshold, Auto-return timer
+
+### Changed
+
+- **Cal buttons require Calibration mode**: Calibration buttons (mid/low/high/225/custom/clear) are only available when in Calibration mode AND reading is stable.
+- **Config flow version**: Bumped to 3.0 for new options schema.
+- **Stability threshold unit**: Now in mV for both pH and ORP (calibration-independent).
+
+### Fixed
+
+- **Deprecated `device_registry.async_get_device`**: Replaced with new `async_get_entry_device` helper that uses `async_get_device_by_identifier(identifier, config_entry_id)` on HA 2026.8+, falling back to `async_get_device(identifiers=...)` on older cores (hacs.json minimum is 2026.5.0).
+
 ## [2026.10.4] - 2026-10-04
 
 ### Fixed
@@ -108,6 +153,7 @@ After upgrading, your existing entries will be migrated automatically. Entity ID
 - pH: mid/low/high calibration, slope, temperature compensation from a HA sensor entity.
 - Dated calibration archives + per-device restore file.
 
+[2026.10.4.1]: https://github.com/echavet/ezo-complete/releases/tag/2026.10.4.1
 [2026.10.4]: https://github.com/echavet/ezo-complete/releases/tag/2026.10.4
 [2026.9.28]: https://github.com/echavet/ezo-complete/releases/tag/2026.9.28
 [2026.8.26.6]: https://github.com/echavet/ezo-complete/releases/tag/2026.8.26.6

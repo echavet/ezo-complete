@@ -9,6 +9,8 @@ from dataclasses import dataclass, field, replace
 class EzoDeviceState:
     kind: str | None = None  # "orp" | "ph"
     reading: float | None = None
+    reading_raw: float | None = None
+    reading_filtered: float | None = None
     continuous: bool | None = None
     continuous_interval: int | None = None
     led: bool | None = None
@@ -43,6 +45,9 @@ class EzoDeviceState:
     stability_samples: int = 0
     stability_required: int = 5
     stability_span_threshold: float | None = None
+    stability_span_mv: float | None = None
+    filter_type: str | None = None
+    filter_window: int | None = None
 
     @property
     def slope_text(self) -> str | None:

@@ -1,4 +1,4 @@
-"""Switches."""
+"""Switches: LED, Sleep, Extended scale (no more continuous - replaced by mode select)."""
 
 from __future__ import annotations
 
@@ -26,13 +26,6 @@ class EzoSwitchEntityDescription(SwitchEntityDescription):
 
 
 SWITCHES: tuple[EzoSwitchEntityDescription, ...] = (
-    EzoSwitchEntityDescription(
-        key="continuous",
-        translation_key="continuous",
-        is_on_fn=lambda s: s.continuous,
-        turn_on_fn=lambda c: c.async_set_continuous(True),
-        turn_off_fn=lambda c: c.async_set_continuous(False),
-    ),
     EzoSwitchEntityDescription(
         key="led",
         translation_key="led",

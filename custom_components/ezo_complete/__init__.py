@@ -18,6 +18,7 @@ from homeassistant.helpers.typing import ConfigType
 from .codec import unique_id_from_serial
 from .const import CONF_DEVICE_TYPE, CONF_SERIAL_NUMBER, DOMAIN, PLATFORMS
 from .coordinator import EzoCoordinator
+from .registry import async_get_entry_device
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def async_migrate_unique_id(
     ent_reg = er.async_get(hass)
     dev_reg = dr.async_get(hass)
 
-    old_device = dev_reg.async_get_device(identifiers={(DOMAIN, old_unique_id)})
+    old_device = async_get_entry_device(hass, config_entry.entry_id, old_unique_id)
     if old_device:
         _LOGGER.debug(
             "Updating device %s identifiers: %s -> %s",
@@ -88,8 +89,36 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
     Version 2.1: unique_id normalization for USB serial stability.
     - Ensures unique_id matches the pattern {serial}_{kind}
     - Migrates entity unique_ids if the entry unique_id changes
+
+    Version 3: UX refactor with exploitation/calibration modes.
+    - continuous_on_start, update_interval, continuous_interval -> new options
+    - Adds mode, measurement_interval, filter, stability settings
     """
-    if config_entry.version > 2:
+    from .const import (
+        CONF_CALIBRATION_AUTO_RETURN,
+        CONF_CONTINUOUS_INTERVAL,
+        CONF_CONTINUOUS_ON_START,
+        CONF_FILTER_TYPE,
+        CONF_FILTER_WINDOW,
+        CONF_MEASUREMENT_INTERVAL,
+        CONF_MODE,
+        CONF_SLEEP,
+        CONF_STABILITY_MAX_SPAN,
+        CONF_STABILITY_WINDOW,
+        CONF_UPDATE_INTERVAL,
+        DEFAULT_CALIBRATION_AUTO_RETURN,
+        DEFAULT_CALIBRATION_INTERVAL,
+        DEFAULT_FILTER_TYPE,
+        DEFAULT_FILTER_WINDOW,
+        DEFAULT_MEASUREMENT_INTERVAL,
+        DEFAULT_MODE,
+        DEFAULT_ORP_STABILITY_SPAN,
+        DEFAULT_PH_STABILITY_SPAN_MV,
+        DEFAULT_SLEEP,
+        DEFAULT_STABILITY_WINDOW,
+    )
+
+    if config_entry.version > 3:
         _LOGGER.warning(
             "Cannot downgrade entry %s from version %s.%s",
             config_entry.entry_id,
@@ -114,6 +143,53 @@ async def async_migrate_entry(hass: HomeAssistant, config_entry: ConfigEntry) ->
             version=2,
             minor_version=1,
         )
+
+    if config_entry.version == 2:
+        _LOGGER.info("Migrating entry %s from version 2.x to 3", config_entry.entry_id)
+        old_options = config_entry.options
+        kind = (config_entry.data.get(CONF_DEVICE_TYPE) or "orp").lower()
+
+        old_update_interval = old_options.get(CONF_UPDATE_INTERVAL, 5)
+        old_continuous_interval = old_options.get(CONF_CONTINUOUS_INTERVAL, 1)
+
+        new_options = {
+            CONF_MODE: DEFAULT_MODE,
+            CONF_MEASUREMENT_INTERVAL: max(5, old_update_interval),
+            CONF_FILTER_TYPE: DEFAULT_FILTER_TYPE,
+            CONF_FILTER_WINDOW: DEFAULT_FILTER_WINDOW,
+            CONF_CONTINUOUS_INTERVAL: old_continuous_interval,
+            CONF_STABILITY_WINDOW: DEFAULT_STABILITY_WINDOW,
+            CONF_STABILITY_MAX_SPAN: (
+                DEFAULT_PH_STABILITY_SPAN_MV if kind == "ph" else DEFAULT_ORP_STABILITY_SPAN
+            ),
+            CONF_CALIBRATION_AUTO_RETURN: DEFAULT_CALIBRATION_AUTO_RETURN,
+            CONF_SLEEP: DEFAULT_SLEEP,
+        }
+
+        if "temperature_entity" in old_options:
+            new_options["temperature_entity"] = old_options["temperature_entity"]
+
+        hass.config_entries.async_update_entry(
+            config_entry,
+            options=new_options,
+            version=3,
+            minor_version=0,
+        )
+
+        ent_reg = er.async_get(hass)
+        unique_id = config_entry.unique_id
+        if unique_id:
+            orphaned_suffixes = ["_continuous"]
+            for suffix in orphaned_suffixes:
+                orphan_uid = f"{unique_id}{suffix}"
+                orphan_entity = ent_reg.async_get_entity_id("switch", DOMAIN, orphan_uid)
+                if orphan_entity:
+                    _LOGGER.info(
+                        "Removing orphaned entity %s (unique_id=%s)",
+                        orphan_entity,
+                        orphan_uid,
+                    )
+                    ent_reg.async_remove(orphan_entity)
 
     return True
 
@@ -204,7 +280,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: EzoConfigEntry) -> bool:
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     coordinator.async_sync_device_name()
-    entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     _LOGGER.info(
         "EZO Complete ready: kind=%s port=%s serial=%s fw=%s",
         coordinator.profile.kind,
@@ -220,7 +295,3 @@ async def async_unload_entry(hass: HomeAssistant, entry: EzoConfigEntry) -> bool
     if unload_ok:
         await entry.runtime_data.async_shutdown()
     return unload_ok
-
-
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)

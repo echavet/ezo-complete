@@ -5,7 +5,9 @@
     },
     "sensor": {
       "orp": { "default": "mdi:sine-wave" },
+      "orp_raw": { "default": "mdi:sine-wave" },
       "ph": { "default": "mdi:ph" },
+      "ph_raw": { "default": "mdi:ph" },
       "compensation_temperature": { "default": "mdi:thermometer" },
       "slope": { "default": "mdi:chart-line" },
       "status_reason": { "default": "mdi:restart-alert" },
@@ -14,8 +16,11 @@
       "calibration_export": { "default": "mdi:export" },
       "firmware": { "default": "mdi:chip" }
     },
+    "select": {
+      "mode": { "default": "mdi:tune-vertical" },
+      "filter_type": { "default": "mdi:filter-variant" }
+    },
     "switch": {
-      "continuous": { "default": "mdi:sync" },
       "led": { "default": "mdi:led-on" },
       "sleep": { "default": "mdi:sleep" },
       "extended_scale": { "default": "mdi:arrow-expand-horizontal" }
@@ -37,7 +42,12 @@
       "ph_mid": { "default": "mdi:gauge" },
       "ph_low": { "default": "mdi:gauge" },
       "ph_high": { "default": "mdi:gauge" },
-      "continuous_interval": { "default": "mdi:timer-outline" }
+      "calibration_interval": { "default": "mdi:timer-outline" },
+      "measurement_interval": { "default": "mdi:timer-outline" },
+      "filter_window": { "default": "mdi:filter-outline" },
+      "stability_window": { "default": "mdi:timer-sand" },
+      "stability_max_span": { "default": "mdi:delta" },
+      "calibration_auto_return": { "default": "mdi:timer-refresh" }
     },
     "text": { "device_name": { "default": "mdi:rename-box" } }
   }

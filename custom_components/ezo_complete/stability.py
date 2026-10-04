@@ -1,9 +1,18 @@
-"""Rolling window: is the live reading stable enough to calibrate?"""
+"""Rolling window: is the live reading stable enough to calibrate?
+
+For pH sensors, stability is judged in mV-equivalent to be independent of
+calibration. The slope (from Cal,?) determines the conversion:
+  mV_delta = pH_delta * 59.16 * (slope% / 100)
+
+This ensures that a probe with low slope doesn't appear falsely stable
+just because the pH range is compressed.
+"""
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+from typing import Callable
 
 
 def compute_min_samples(
@@ -27,6 +36,7 @@ class StabilitySnapshot:
     minimum: float | None
     maximum: float | None
     span: float | None
+    span_mv: float | None
     stable: bool
     sample_count: int
     required_samples: int
@@ -39,12 +49,15 @@ class StabilityWindow:
     Args:
         window_s: Time window to consider (seconds).
         min_samples: Base minimum samples required (used with fast intervals).
-        span: Maximum allowed span (max - min) to consider readings stable.
+        span_threshold_mv: Maximum allowed span in mV to consider readings stable.
         interval_s: Expected reading interval (seconds). When provided, the
             required sample count adapts so that stability is achievable even
             with slow Atlas C,n intervals (e.g. 5 s).
         min_samples_floor: Absolute minimum samples, even for slow intervals.
         min_samples_ceiling: Maximum samples required, even for fast intervals.
+        to_mv_fn: Optional function to convert reading values to mV-equivalent.
+            For ORP, this is identity (readings are already in mV).
+            For pH, this converts pH span to mV using the current slope.
     """
 
     def __init__(
@@ -52,17 +65,19 @@ class StabilityWindow:
         *,
         window_s: float,
         min_samples: int,
-        span: float,
+        span_threshold_mv: float,
         interval_s: float | None = None,
         min_samples_floor: int = 3,
         min_samples_ceiling: int = 5,
+        to_mv_fn: Callable[[float], float] | None = None,
     ) -> None:
         self._window_s = window_s
         self._base_min_samples = min_samples
-        self._span = span
+        self._span_threshold_mv = span_threshold_mv
         self._interval_s = interval_s
         self._min_samples_floor = min_samples_floor
         self._min_samples_ceiling = min_samples_ceiling
+        self._to_mv_fn = to_mv_fn or (lambda x: x)
         self._samples: deque[tuple[float, float]] = deque()
 
     @property
@@ -77,9 +92,22 @@ class StabilityWindow:
             self._min_samples_ceiling,
         )
 
+    @property
+    def span_threshold_mv(self) -> float:
+        """Current span threshold in mV."""
+        return self._span_threshold_mv
+
     def set_interval(self, interval_s: float | None) -> None:
         """Update the expected reading interval (e.g. when C,n changes)."""
         self._interval_s = interval_s
+
+    def set_span_threshold(self, threshold_mv: float) -> None:
+        """Update the span threshold in mV."""
+        self._span_threshold_mv = threshold_mv
+
+    def set_to_mv_fn(self, fn: Callable[[float], float] | None) -> None:
+        """Update the mV conversion function (e.g. when slope changes)."""
+        self._to_mv_fn = fn or (lambda x: x)
 
     def reset(self) -> None:
         """Clear accumulated samples (e.g. when switching from continuous to polling)."""
@@ -93,11 +121,21 @@ class StabilityWindow:
         values = [sample for _, sample in self._samples]
         required = self.required_samples
         if not values:
-            return StabilitySnapshot(None, None, None, False, 0, required, self._span)
+            return StabilitySnapshot(
+                None, None, None, None, False, 0, required, self._span_threshold_mv
+            )
         minimum = min(values)
         maximum = max(values)
-        current_span = maximum - minimum
-        stable = len(values) >= required and current_span <= self._span
+        span_native = maximum - minimum
+        span_mv = self._to_mv_fn(span_native)
+        stable = len(values) >= required and span_mv <= self._span_threshold_mv
         return StabilitySnapshot(
-            minimum, maximum, current_span, stable, len(values), required, self._span
+            minimum,
+            maximum,
+            span_native,
+            span_mv,
+            stable,
+            len(values),
+            required,
+            self._span_threshold_mv,
         )
