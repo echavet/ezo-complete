@@ -128,6 +128,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._last_pushed_t: float | None = None
         self._auto_return_task: asyncio.Task[None] | None = None
         self._auto_return_deadline: float = 0.0
+        self._next_poll_time: float = 0.0
         self.cal_setpoints: dict[str, float] = {
             slot.key: slot.default for slot in self.profile.cal_slots if slot.has_number
         }
@@ -201,6 +202,35 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
     @property
     def persisted_sleep(self) -> bool:
         return bool(self.entry.options.get(CONF_SLEEP, DEFAULT_SLEEP))
+
+    @callback
+    def _schedule_refresh(self) -> None:
+        """Schedule next refresh at fixed rate (start-to-start interval).
+        
+        Override parent to ensure consistent polling intervals regardless of
+        how long each poll takes. Standard DataUpdateCoordinator schedules
+        next poll after completion, causing drift.
+        """
+        if self._update_interval_seconds is None:
+            return
+        if self.config_entry and self.config_entry.pref_disable_polling:
+            return
+
+        self._async_unsub_refresh()
+
+        loop = self.hass.loop
+        now = loop.time()
+
+        if self._next_poll_time <= now:
+            self._next_poll_time = now + self._update_interval_seconds
+        else:
+            pass
+
+        delay = max(0.0, self._next_poll_time - now)
+        self._unsub_refresh = loop.call_at(
+            now + delay, self.__wrap_handle_refresh_interval
+        ).cancel
+        self._next_poll_time += self._update_interval_seconds
 
     def _ph_span_to_mv(self, span_ph: float) -> float:
         """Convert pH span to mV-equivalent using current slope.
@@ -440,7 +470,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             return self.data
         try:
             if self.mode == MODE_EXPLOITATION:
-                await self._async_push_temperature()
+                await self._async_push_temperature(hold_stream=False)
                 await self._command("R")
             elif time.monotonic() - self._last_diag_at >= 60:
                 async with self._hold_stream():
@@ -729,17 +759,19 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
 
         @callback
         def _on_temp(event: Event) -> None:
-            if self.persisted_sleep:
-                return
-            self.hass.async_create_task(self._async_push_temperature())
+            pass
 
         self._temp_unsub = async_track_state_change_event(
             self.hass, [entity_id], _on_temp
         )
-        if not self.persisted_sleep:
-            self.hass.async_create_task(self._async_push_temperature())
 
-    async def _async_push_temperature(self) -> None:
+    async def _async_push_temperature(self, *, hold_stream: bool = True) -> None:
+        """Push temperature compensation value to the probe.
+        
+        Args:
+            hold_stream: If True, pause continuous mode during push. In exploitation
+                mode, this should be False since we're polling, not streaming.
+        """
         if not self.profile.supports_temperature:
             return
         if self.persisted_sleep:
@@ -767,10 +799,14 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             and abs(value - self._last_pushed_t) < TEMPERATURE_PUSH_DELTA
         ):
             return
-        async with self._hold_stream():
+        if hold_stream:
+            async with self._hold_stream():
+                await self._command(f"T,{value:.2f}", ignore_error=True)
+                self._last_pushed_t = value
+                await self._command("T,?", ignore_error=True)
+        else:
             await self._command(f"T,{value:.2f}", ignore_error=True)
             self._last_pushed_t = value
-            await self._command("T,?", ignore_error=True)
 
     async def _initialize_device(self) -> None:
         info = await self.session.identify()
@@ -976,6 +1012,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         state.stability_required = snap.required_samples
         state.stability_span_threshold = snap.span_threshold
         state.stability_span_mv = snap.span_mv
+        state.stability_effective_window = snap.effective_window
 
     def _apply_query(self, state: EzoDeviceState, line: ParsedLine) -> None:
         if self.profile.apply_query(state, line):

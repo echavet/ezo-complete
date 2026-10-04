@@ -41,6 +41,7 @@ class StabilitySnapshot:
     sample_count: int
     required_samples: int
     span_threshold: float
+    effective_window: float | None = None
 
 
 class StabilityWindow:
@@ -113,16 +114,30 @@ class StabilityWindow:
         """Clear accumulated samples (e.g. when switching from continuous to polling)."""
         self._samples.clear()
 
+    @property
+    def effective_window_s(self) -> float:
+        """Effective window size, expanded if needed to fit required samples.
+        
+        With slow polling intervals (e.g. 25s in exploitation mode), the
+        configured window (e.g. 10s) may be too small to ever accumulate
+        enough samples. We expand to fit required_samples × interval.
+        """
+        if self._interval_s is None or self._interval_s <= 0:
+            return self._window_s
+        min_window = self.required_samples * self._interval_s
+        return max(self._window_s, min_window)
+
     def push(self, value: float, now: float) -> StabilitySnapshot:
         self._samples.append((now, value))
-        cutoff = now - self._window_s
+        cutoff = now - self.effective_window_s
         while self._samples and self._samples[0][0] < cutoff:
             self._samples.popleft()
         values = [sample for _, sample in self._samples]
         required = self.required_samples
         if not values:
             return StabilitySnapshot(
-                None, None, None, None, False, 0, required, self._span_threshold_mv
+                None, None, None, None, False, 0, required, self._span_threshold_mv,
+                self.effective_window_s
             )
         minimum = min(values)
         maximum = max(values)
@@ -138,4 +153,5 @@ class StabilityWindow:
             len(values),
             required,
             self._span_threshold_mv,
+            self.effective_window_s,
         )
