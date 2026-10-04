@@ -77,6 +77,7 @@ from .const import (
     STABILITY_MIN_SAMPLES_FLOOR,
     STALE_WAKE_SECONDS,
     TEMPERATURE_PUSH_DELTA,
+    TEMPERATURE_PUSH_MIN_INTERVAL,
 )
 from .export_store import ExportStore
 from .filter import ReadingFilter
@@ -128,7 +129,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         self._last_pushed_t: float | None = None
         self._auto_return_task: asyncio.Task[None] | None = None
         self._auto_return_deadline: float = 0.0
-        self._next_poll_time: float = 0.0
+        self._last_temp_push_at: float = 0.0
+        self._configured_interval: timedelta = timedelta(seconds=max(interval, 1))
         self.cal_setpoints: dict[str, float] = {
             slot.key: slot.default for slot in self.profile.cal_slots if slot.has_number
         }
@@ -202,35 +204,6 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
     @property
     def persisted_sleep(self) -> bool:
         return bool(self.entry.options.get(CONF_SLEEP, DEFAULT_SLEEP))
-
-    @callback
-    def _schedule_refresh(self) -> None:
-        """Schedule next refresh at fixed rate (start-to-start interval).
-        
-        Override parent to ensure consistent polling intervals regardless of
-        how long each poll takes. Standard DataUpdateCoordinator schedules
-        next poll after completion, causing drift.
-        """
-        if self._update_interval_seconds is None:
-            return
-        if self.config_entry and self.config_entry.pref_disable_polling:
-            return
-
-        self._async_unsub_refresh()
-
-        loop = self.hass.loop
-        now = loop.time()
-
-        if self._next_poll_time <= now:
-            self._next_poll_time = now + self._update_interval_seconds
-        else:
-            pass
-
-        delay = max(0.0, self._next_poll_time - now)
-        self._unsub_refresh = loop.call_at(
-            now + delay, self.__wrap_handle_refresh_interval
-        ).cancel
-        self._next_poll_time += self._update_interval_seconds
 
     def _ph_span_to_mv(self, span_ph: float) -> float:
         """Convert pH span to mV-equivalent using current slope.
@@ -349,7 +322,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             )
 
         if CONF_MEASUREMENT_INTERVAL in changed and self.mode == MODE_EXPLOITATION:
-            self.update_interval = timedelta(seconds=self.measurement_interval)
+            self._configured_interval = timedelta(seconds=self.measurement_interval)
+            self.update_interval = self._configured_interval
 
         if CONF_CONTINUOUS_INTERVAL in changed and self.mode == MODE_CALIBRATION:
             await self._command(f"C,{self.calibration_interval}", ignore_error=True)
@@ -418,7 +392,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         await self._update_options({CONF_MODE: MODE_EXPLOITATION})
         await self._command("C,0", ignore_error=True)
         await self._command("C,?", ignore_error=True)
-        self.update_interval = timedelta(seconds=self.measurement_interval)
+        self._configured_interval = timedelta(seconds=self.measurement_interval)
+        self.update_interval = self._configured_interval
         _LOGGER.info("Switched to exploitation mode (polling %d s)", self.measurement_interval)
 
     async def _update_options(self, updates: dict) -> None:
@@ -468,6 +443,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             raise UpdateFailed("EZO Complete is disconnected")
         if self.persisted_sleep:
             return self.data
+        poll_start = time.monotonic()
         try:
             if self.mode == MODE_EXPLOITATION:
                 await self._async_push_temperature(hold_stream=False)
@@ -479,6 +455,11 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         except EzoClientError as err:
             self._schedule_reconnect()
             raise UpdateFailed(str(err)) from err
+        if self.mode == MODE_EXPLOITATION:
+            poll_duration = time.monotonic() - poll_start
+            configured_seconds = self._configured_interval.total_seconds()
+            adjusted = max(0.5, configured_seconds - poll_duration)
+            self.update_interval = timedelta(seconds=adjusted)
         return self.data
 
     async def async_set_calibration_interval(self, seconds: int) -> None:
@@ -759,11 +740,70 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
 
         @callback
         def _on_temp(event: Event) -> None:
-            pass
+            """Schedule temperature push when temperature entity changes."""
+            if self.persisted_sleep:
+                return
+            new_state = event.data.get("new_state")
+            if new_state is None or new_state.state in {"unknown", "unavailable", ""}:
+                return
+            self.hass.async_create_task(
+                self._async_push_temperature_coalesced(),
+                name=f"{DOMAIN}_temp_push",
+            )
 
         self._temp_unsub = async_track_state_change_event(
             self.hass, [entity_id], _on_temp
         )
+
+    def _get_temperature_value(self) -> float | None:
+        """Get current temperature from the configured entity, converted to Celsius."""
+        entity_id = self.entry.options.get(CONF_TEMPERATURE_ENTITY)
+        if not entity_id:
+            return None
+        state = self.hass.states.get(entity_id)
+        if state is None or state.state in {"unknown", "unavailable", ""}:
+            return None
+        try:
+            value = float(state.state)
+        except (TypeError, ValueError):
+            return None
+        unit = state.attributes.get("unit_of_measurement")
+        if unit and unit != UnitOfTemperature.CELSIUS:
+            try:
+                value = TemperatureConverter.convert(
+                    value, unit, UnitOfTemperature.CELSIUS
+                )
+            except Exception:  # noqa: BLE001
+                return None
+        return value
+
+    async def _async_push_temperature_coalesced(self) -> None:
+        """Push temperature on entity change, with rate limiting and command lock.
+        
+        Called from _on_temp callback. Rate-limited to at most once per 30s,
+        and only if temperature changed >= 0.05°C. Uses the command lock to
+        avoid interfering with polls.
+        """
+        if not self.profile.supports_temperature:
+            return
+        if self.persisted_sleep:
+            return
+        now = time.monotonic()
+        if now - self._last_temp_push_at < TEMPERATURE_PUSH_MIN_INTERVAL:
+            return
+        value = self._get_temperature_value()
+        if value is None:
+            return
+        if (
+            self._last_pushed_t is not None
+            and abs(value - self._last_pushed_t) < TEMPERATURE_PUSH_DELTA
+        ):
+            return
+        async with self._hold_lock:
+            await self._command(f"T,{value:.2f}", ignore_error=True)
+            self._last_pushed_t = value
+            self._last_temp_push_at = now
+            await self._command("T,?", ignore_error=True)
 
     async def _async_push_temperature(self, *, hold_stream: bool = True) -> None:
         """Push temperature compensation value to the probe.
@@ -776,24 +816,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             return
         if self.persisted_sleep:
             return
-        entity_id = self.entry.options.get(CONF_TEMPERATURE_ENTITY)
-        if not entity_id:
+        value = self._get_temperature_value()
+        if value is None:
             return
-        state = self.hass.states.get(entity_id)
-        if state is None or state.state in {"unknown", "unavailable", ""}:
-            return
-        try:
-            value = float(state.state)
-        except (TypeError, ValueError):
-            return
-        unit = state.attributes.get("unit_of_measurement")
-        if unit and unit != UnitOfTemperature.CELSIUS:
-            try:
-                value = TemperatureConverter.convert(
-                    value, unit, UnitOfTemperature.CELSIUS
-                )
-            except Exception:  # noqa: BLE001
-                return
         if (
             self._last_pushed_t is not None
             and abs(value - self._last_pushed_t) < TEMPERATURE_PUSH_DELTA
@@ -803,10 +828,13 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             async with self._hold_stream():
                 await self._command(f"T,{value:.2f}", ignore_error=True)
                 self._last_pushed_t = value
+                self._last_temp_push_at = time.monotonic()
                 await self._command("T,?", ignore_error=True)
         else:
             await self._command(f"T,{value:.2f}", ignore_error=True)
             self._last_pushed_t = value
+            self._last_temp_push_at = time.monotonic()
+            await self._command("T,?", ignore_error=True)
 
     async def _initialize_device(self) -> None:
         info = await self.session.identify()
@@ -852,7 +880,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             await self._command(f"C,{self.calibration_interval}", ignore_error=True)
             self._start_auto_return_timer()
         else:
-            self.update_interval = timedelta(seconds=self.measurement_interval)
+            self._configured_interval = timedelta(seconds=self.measurement_interval)
+            self.update_interval = self._configured_interval
 
         await self._command("C,?", ignore_error=True)
         await self._refresh_diagnostics()

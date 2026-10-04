@@ -31,14 +31,3 @@ class EzoEntity(CoordinatorEntity[EzoCoordinator]):
             serial_number=coordinator.entry.data.get("serial_number"),
             configuration_url="https://atlas-scientific.com/",
         )
-
-    @property
-    def suggested_object_id(self) -> str:
-        """Return consistent object_id independent of device name.
-        
-        This ensures entity_ids like `sensor.ezo_ph_ph` instead of
-        `sensor.piscine_ezo_ph_ph` when the device is renamed.
-        """
-        kind = self.coordinator.profile.kind
-        key = self.entity_description.key
-        return f"ezo_{kind}_{key}"
