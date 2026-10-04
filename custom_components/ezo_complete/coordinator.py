@@ -275,7 +275,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
     async def _async_options_updated(
         self, hass: HomeAssistant, entry: ConfigEntry
     ) -> None:
-        """Handle options update - apply changes immediately."""
+        """Handle options update - apply changes immediately without reload."""
         self._filter.configure(self.filter_type, self.filter_window)
         self._stability = StabilityWindow(
             window_s=self.stability_window,
@@ -289,7 +289,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         if self.mode == MODE_EXPLOITATION:
             self.update_interval = timedelta(seconds=self.measurement_interval)
         self._reset_auto_return_timer()
+        self._retrack_temperature()
         self.async_update_listeners()
+
+    def _retrack_temperature(self) -> None:
+        """Re-subscribe to temperature entity if it changed."""
+        if self._temp_unsub is not None:
+            self._temp_unsub()
+            self._temp_unsub = None
+        self._async_track_temperature()
 
     async def async_shutdown(self) -> None:
         if self._temp_unsub is not None:
