@@ -338,23 +338,28 @@ def test_export_store(tmp_path) -> None:
 def test_export_hex_rejected_by_range_check() -> None:
     """Hex export lines that parse as numbers are rejected by range check.
     
-    Lines like '010101000080' are valid numbers (~1.01e10) and thus parsed
-    as READING. The fix is that is_reading_in_range() rejects them because
-    they are way outside pH (-1.6..15.6) or ORP (-1019.9..1019.9 mV) bounds.
-    """
-    hex_lines_as_numbers = ["010101000080", "00CB213F0100", "0040B1C6A8D3"]
-    for line in hex_lines_as_numbers:
-        parsed = codec.parse_line(line)
-        if parsed.kind is codec.LineKind.READING and parsed.value is not None:
-            assert not codec.is_reading_in_range(parsed.value, "ph"), \
-                f"{line} ({parsed.value}) should be out of pH range"
-            assert not codec.is_reading_in_range(parsed.value, "orp"), \
-                f"{line} ({parsed.value}) should be out of ORP range"
+    Lines like '010101000080' (only digits) are valid numbers (~1.01e10) and
+    thus parsed as READING. The fix is that is_reading_in_range() rejects them
+    because they are way outside pH (-1.6..15.6) or ORP (-1020..1020 mV) bounds.
     
-    short_hex = ["9E6B"]
-    for line in short_hex:
+    Lines with hex letters (A-F) are parsed as OTHER, not READING.
+    """
+    numeric_only_hex = ["010101000080"]
+    for line in numeric_only_hex:
         parsed = codec.parse_line(line)
-        assert parsed.kind is codec.LineKind.OTHER, f"{line} should be OTHER (contains letters)"
+        assert parsed.kind is codec.LineKind.READING, \
+            f"{line} must parse as READING for this test to be valid"
+        assert parsed.value is not None, f"{line} must have a numeric value"
+        assert not codec.is_reading_in_range(parsed.value, "ph"), \
+            f"{line} ({parsed.value}) should be out of pH range"
+        assert not codec.is_reading_in_range(parsed.value, "orp"), \
+            f"{line} ({parsed.value}) should be out of ORP range"
+    
+    hex_with_letters = ["00CB213F0100", "0040B1C6A8D3", "9E6B"]
+    for line in hex_with_letters:
+        parsed = codec.parse_line(line)
+        assert parsed.kind is codec.LineKind.OTHER, \
+            f"{line} should be OTHER (contains hex letters A-F)"
 
 
 def test_is_reading_in_range_ph() -> None:
@@ -371,14 +376,14 @@ def test_is_reading_in_range_ph() -> None:
 
 
 def test_is_reading_in_range_orp() -> None:
-    """ORP readings must be within -1019.9..1019.9 mV (datasheet)."""
+    """ORP readings must be within -1020..1020 mV (datasheet ORP_RANGE_STANDARD)."""
     assert codec.is_reading_in_range(225.0, "orp")
     assert codec.is_reading_in_range(0.0, "orp")
-    assert codec.is_reading_in_range(-1019.9, "orp")
-    assert codec.is_reading_in_range(1019.9, "orp")
+    assert codec.is_reading_in_range(-1020.0, "orp")
+    assert codec.is_reading_in_range(1020.0, "orp")
     assert codec.is_reading_in_range(-500.0, "orp")
-    assert not codec.is_reading_in_range(-1020.0, "orp")
-    assert not codec.is_reading_in_range(1020.0, "orp")
+    assert not codec.is_reading_in_range(-1020.1, "orp")
+    assert not codec.is_reading_in_range(1020.1, "orp")
     assert not codec.is_reading_in_range(1e10, "orp")
 
 
@@ -433,5 +438,56 @@ def test_command_succeeded_non_cal_ack_accepts_empty() -> None:
 
 
 def test_response_code_enable_commands_includes_ok1() -> None:
-    """RESPONSE_CODE_ENABLE_COMMANDS should include *OK,1."""
+    """RESPONSE_CODE_ENABLE_COMMANDS should include *OK,1 (modern Atlas syntax)."""
     assert "*OK,1" in const.RESPONSE_CODE_ENABLE_COMMANDS
+
+
+def test_orp_reading_range_uses_standard_bounds() -> None:
+    """ORP reading range should use ORP_RANGE_STANDARD (-1020..1020)."""
+    assert const.ORP_READING_MIN == const.ORP_RANGE_STANDARD[0]
+    assert const.ORP_READING_MAX == const.ORP_RANGE_STANDARD[1]
+    assert const.ORP_READING_MIN == -1020.0
+    assert const.ORP_READING_MAX == 1020.0
+
+
+def test_parse_export_timestamp_aware() -> None:
+    """Timezone-aware ISO string should parse correctly."""
+    from datetime import UTC, datetime, timezone
+
+    iso_aware = "2026-10-04T12:00:00+00:00"
+    dt = datetime.fromisoformat(iso_aware)
+    assert dt.tzinfo is not None, "Parsed datetime should be timezone-aware"
+    assert dt.year == 2026
+    assert dt.month == 10
+    assert dt.day == 4
+    assert dt.hour == 12
+
+    iso_aware_offset = "2026-10-04T14:00:00+02:00"
+    dt2 = datetime.fromisoformat(iso_aware_offset)
+    assert dt2.tzinfo is not None
+
+
+def test_parse_export_timestamp_naive_assumes_utc() -> None:
+    """Naive ISO string (no timezone) should be treated as UTC."""
+    from datetime import UTC, datetime
+
+    iso_naive = "2026-10-04T12:00:00"
+    dt = datetime.fromisoformat(iso_naive)
+    assert dt.tzinfo is None, "Naive datetime has no timezone"
+    dt_utc = dt.replace(tzinfo=UTC)
+    assert dt_utc.tzinfo is UTC
+    assert dt_utc.year == 2026
+    assert dt_utc.hour == 12
+
+
+def test_parse_export_timestamp_invalid() -> None:
+    """Invalid strings should raise ValueError (caught by sensor function)."""
+    from datetime import datetime
+
+    invalid_strings = ["not-a-date", "2026-13-40", "", "12:00:00"]
+    for s in invalid_strings:
+        try:
+            datetime.fromisoformat(s)
+            assert False, f"Expected ValueError for {s!r}"
+        except ValueError:
+            pass

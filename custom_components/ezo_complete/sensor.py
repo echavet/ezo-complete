@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -28,11 +28,17 @@ PARALLEL_UPDATES = 0
 
 
 def _parse_export_timestamp(iso_str: str | None) -> datetime | None:
-    """Parse ISO timestamp string to timezone-aware datetime for TIMESTAMP sensor."""
+    """Parse ISO timestamp string to timezone-aware datetime for TIMESTAMP sensor.
+
+    If the parsed datetime is naive (no timezone info), assumes UTC.
+    """
     if not iso_str:
         return None
     try:
-        return datetime.fromisoformat(iso_str)
+        dt = datetime.fromisoformat(iso_str)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        return dt
     except ValueError:
         return None
 
@@ -147,7 +153,7 @@ class EzoSensor(EzoEntity, SensorEntity):
     entity_description: EzoSensorEntityDescription
 
     @property
-    def native_value(self) -> StateType:
+    def native_value(self) -> StateType | datetime:
         return self.entity_description.value_fn(self.coordinator.data)
 
     @property

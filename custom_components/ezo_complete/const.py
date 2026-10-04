@@ -71,10 +71,15 @@ STATUS_REASON_MAP: dict[str, str] = {
     "U": "unknown",
 }
 
-RESPONSE_CODE_ENABLE_COMMANDS: tuple[str, ...] = ("RESPONSE,1", "O,1", "OK,1", "*OK,1")
+# Commands to enable UART response codes on Atlas EZO circuits.
+# - RESPONSE,1: legacy syntax (older firmware)
+# - *OK,1: modern syntax (firmware 2.x+, per pH_EZO_Datasheet.pdf / ORP_EZO_Datasheet.pdf)
+# Tried in order; first successful command wins.
+RESPONSE_CODE_ENABLE_COMMANDS: tuple[str, ...] = ("*OK,1", "RESPONSE,1")
 
-PH_READING_MIN = -1.6
-PH_READING_MAX = 15.6
-ORP_READING_MIN = -1019.9
-ORP_READING_MAX = 1019.9
+# Valid reading ranges per Atlas datasheets (values outside are measurement artifacts)
+PH_READING_MIN = PH_RANGE_EXTENDED[0]  # -1.6
+PH_READING_MAX = PH_RANGE_EXTENDED[1]  # 15.6
+ORP_READING_MIN = ORP_RANGE_STANDARD[0]  # -1020.0
+ORP_READING_MAX = ORP_RANGE_STANDARD[1]  # 1020.0
 ATTRIBUTION = "Data provided by Atlas Scientific EZO Complete"

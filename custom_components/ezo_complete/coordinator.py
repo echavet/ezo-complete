@@ -696,7 +696,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                     self._stability.set_interval(float(cont.interval))
                 elif not cont.enabled:
                     self._stability.set_interval(self.update_interval.total_seconds())
-                    if was_continuous:
+                    # Reset stability only when transitioning FROM continuous (True),
+                    # not on first init (None) when the window is already empty.
+                    if was_continuous is True:
                         self._stability.reset()
         elif key == "cal":
             points = parse_cal_points(raw)
