@@ -793,14 +793,16 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         return value
 
     async def _async_push_temperature_coalesced(self) -> None:
-        """Push temperature on entity change, with rate limiting and command lock.
+        """Handle temperature entity change.
         
-        Called from _on_temp callback. Rate-limited to at most once per 30s,
-        and only if temperature changed >= 0.05°C. Uses the command lock to
-        avoid interfering with polls.
+        Called from _on_temp callback when the temperature entity state changes.
         
-        If within the rate limit window, defers the push to when the window ends
-        (instead of dropping the change).
+        In EXPLOITATION mode: just store the pending value; the next poll will
+        send it before R. This avoids async_set_updated_data outside polls,
+        which would reset HA's poll timer and delay readings.
+        
+        In CALIBRATION mode: push immediately or defer (rate-limited to 30s,
+        delta >= 0.05°C), since there's no polling to piggyback on.
         """
         if not self.profile.supports_temperature:
             return
@@ -818,6 +820,16 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         ):
             return
         
+        # In exploitation mode, just store the pending value for the next poll
+        if self.mode == MODE_EXPLOITATION:
+            self._pending_temp_value = value
+            _LOGGER.debug(
+                "Temperature %.2f°C stored for next poll (exploitation mode)",
+                value,
+            )
+            return
+        
+        # In calibration mode, push immediately or defer
         now = time.monotonic()
         time_since_last = now - self._last_temp_push_at
         
@@ -875,12 +887,22 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         Args:
             hold_stream: If True, pause continuous mode during push. In exploitation
                 mode, this should be False since we're polling, not streaming.
+        
+        In exploitation mode, this is called during polls and will also consume
+        any pending temperature value stored by _async_push_temperature_coalesced.
         """
         if not self.profile.supports_temperature:
             return
         if self.persisted_sleep:
             return
-        value = self._get_temperature_value()
+        
+        # Use pending value if available (set by _async_push_temperature_coalesced)
+        value = self._pending_temp_value
+        if value is not None:
+            self._pending_temp_value = None
+        else:
+            value = self._get_temperature_value()
+        
         if value is None:
             return
         if (

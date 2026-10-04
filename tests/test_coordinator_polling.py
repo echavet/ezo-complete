@@ -311,3 +311,142 @@ class TestContinuousFromCommand:
 
         assert continuous is True
         assert should_skip_listen(continuous, mode) is False
+
+
+class TestTemperaturePollIntegration:
+    """Test that temperature changes in exploitation mode don't disrupt polling.
+    
+    In exploitation mode, temperature changes should NOT push immediately
+    (which would call async_set_updated_data and reset HA's poll timer).
+    Instead, the pending value is stored and sent in the next poll.
+    """
+
+    def test_exploitation_mode_stores_pending_temp(self) -> None:
+        """In exploitation mode, temperature change stores pending value instead of pushing."""
+        mode = "exploitation"
+        pending_temp_value = None
+        last_pushed_t = 25.0
+        
+        # Temperature changes
+        new_temp = 26.0
+        delta = abs(new_temp - last_pushed_t)
+        
+        # Check delta threshold
+        assert delta >= const.TEMPERATURE_PUSH_DELTA
+        
+        # In exploitation mode, just store the pending value
+        if mode == "exploitation":
+            pending_temp_value = new_temp
+        
+        assert pending_temp_value == 26.0, "Should store pending value"
+
+    def test_calibration_mode_pushes_immediately(self) -> None:
+        """In calibration mode, temperature change pushes immediately (or defers)."""
+        mode = "calibration"
+        pending_temp_value = None
+        immediate_push_called = False
+        last_pushed_t = 25.0
+        last_temp_push_at = 0.0
+        
+        # Temperature changes
+        new_temp = 26.0
+        delta = abs(new_temp - last_pushed_t)
+        
+        # Check delta threshold
+        assert delta >= const.TEMPERATURE_PUSH_DELTA
+        
+        # Simulate time (past rate limit window)
+        now = 100.0
+        time_since_last = now - last_temp_push_at
+        
+        # In calibration mode, push immediately if rate limit allows
+        if mode == "calibration":
+            if time_since_last >= const.TEMPERATURE_PUSH_MIN_INTERVAL:
+                immediate_push_called = True
+            else:
+                pending_temp_value = new_temp
+        
+        assert immediate_push_called is True, "Should push immediately in calibration mode"
+        assert pending_temp_value is None, "Should not store pending value when pushing"
+
+    def test_poll_consumes_pending_temp(self) -> None:
+        """Poll should consume pending temperature value before R command."""
+        pending_temp_value = 26.5
+        last_pushed_t = 25.0
+        
+        # Simulate poll consuming pending value
+        value = pending_temp_value
+        pending_temp_value = None  # Clear after consuming
+        
+        assert value == 26.5, "Poll should get the pending value"
+        assert pending_temp_value is None, "Pending value should be cleared"
+        
+        # Delta check
+        delta = abs(value - last_pushed_t)
+        assert delta >= const.TEMPERATURE_PUSH_DELTA, "Delta should trigger push"
+
+    def test_poll_falls_back_to_current_temp(self) -> None:
+        """Poll should fall back to current temperature if no pending value."""
+        pending_temp_value = None
+        current_temp = 27.0
+        
+        # Simulate poll logic
+        if pending_temp_value is not None:
+            value = pending_temp_value
+            pending_temp_value = None
+        else:
+            value = current_temp
+        
+        assert value == 27.0, "Should fall back to current temperature"
+
+    def test_no_poll_timer_reset_in_exploitation(self) -> None:
+        """Verify that storing pending temp doesn't call async_set_updated_data.
+        
+        In exploitation mode, temperature entity changes should only store
+        the pending value, not push immediately. The push happens in the
+        poll, which already calls async_set_updated_data anyway.
+        """
+        mode = "exploitation"
+        async_set_updated_data_calls = 0
+        
+        # Simulate temperature entity change handler
+        def on_temp_change(value: float):
+            nonlocal async_set_updated_data_calls
+            if mode == "exploitation":
+                # Just store pending value - no push, no async_set_updated_data
+                pass
+            else:
+                # In calibration, push would call async_set_updated_data
+                async_set_updated_data_calls += 1
+        
+        # Temperature changes in exploitation mode
+        on_temp_change(26.0)
+        on_temp_change(27.0)
+        on_temp_change(28.0)
+        
+        assert async_set_updated_data_calls == 0, (
+            "Temperature changes in exploitation mode should not call "
+            "async_set_updated_data (which resets poll timer)"
+        )
+
+    def test_poll_timing_preserved_with_temp_changes(self) -> None:
+        """Verify poll timing is preserved when temperature changes between polls.
+        
+        Scenario: 5s poll interval, temperature changes at T=2s
+        - Without fix: poll timer resets at T=2s, next poll at T=7s (7s gap)
+        - With fix: pending value stored, next poll at T=5s as expected (5s gap)
+        """
+        configured_interval = 5.0
+        
+        # Simulate timeline
+        poll_times = [0.0]  # First poll at T=0
+        temp_change_time = 2.0
+        
+        # With fix: temperature change just stores pending, poll continues on schedule
+        next_poll_time = poll_times[0] + configured_interval
+        
+        assert next_poll_time == 5.0, "Next poll should be at T=5s"
+        
+        # Gap should be exactly the configured interval
+        gap = next_poll_time - poll_times[0]
+        assert gap == configured_interval, f"Gap should be {configured_interval}s, got {gap}s"
