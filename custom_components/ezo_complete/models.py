@@ -50,6 +50,7 @@ class EzoDeviceState:
     filter_type: str | None = None
     filter_window: int | None = None
     rejected_readings: int = 0
+    consecutive_rejected: int = 0
 
     @property
     def slope_text(self) -> str | None:

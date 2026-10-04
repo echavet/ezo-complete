@@ -23,8 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 T = TypeVar("T", int, float)
 
 # Reading format patterns (Atlas EZO format)
-# pH: optional sign, digits, exactly 3 decimal places
-_PH_READING_RE = re.compile(r"^-?(?:0|[1-9]\d*)\.(\d{3})$")
+# pH: optional sign, digits, 2 or 3 decimal places (datasheet shows both)
+_PH_READING_RE = re.compile(r"^-?(?:0|[1-9]\d*)\.(\d{2,3})$")
 # ORP: optional sign, digits, exactly 1 decimal place
 _ORP_READING_RE = re.compile(r"^-?(?:0|[1-9]\d*)\.(\d)$")
 

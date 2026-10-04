@@ -193,22 +193,25 @@ class TestReadingFormatValidation:
     """Test that reading format validation works correctly.
     
     Atlas EZO format requirements:
-    - pH: exactly 3 decimal places (e.g., 7.012)
+    - pH: 2 or 3 decimal places (e.g., 7.01 or 7.012)
     - ORP: exactly 1 decimal place (e.g., 754.7)
     - No leading zeros (e.g., reject 0013, 007.012)
     """
 
     def test_valid_ph_format(self) -> None:
-        """Valid pH format: exactly 3 decimal places."""
+        """Valid pH format: 2 or 3 decimal places."""
         assert validation.is_valid_reading_format("7.012", "ph") is True
+        assert validation.is_valid_reading_format("7.01", "ph") is True
         assert validation.is_valid_reading_format("0.000", "ph") is True
+        assert validation.is_valid_reading_format("0.00", "ph") is True
         assert validation.is_valid_reading_format("14.000", "ph") is True
+        assert validation.is_valid_reading_format("14.00", "ph") is True
         assert validation.is_valid_reading_format("-1.234", "ph") is True
+        assert validation.is_valid_reading_format("-1.23", "ph") is True
 
     def test_invalid_ph_format_wrong_decimals(self) -> None:
         """pH with wrong number of decimals should be rejected."""
         assert validation.is_valid_reading_format("7.0", "ph") is False
-        assert validation.is_valid_reading_format("7.01", "ph") is False
         assert validation.is_valid_reading_format("7.0123", "ph") is False
         assert validation.is_valid_reading_format("7", "ph") is False
 
@@ -524,3 +527,75 @@ class TestValidateAndLog:
         )
         assert is_valid is False
         assert reason == "null value"
+
+
+class TestPhTwoDecimalFormat:
+    """Test that pH accepts 2-decimal format (datasheet shows both 2 and 3)."""
+
+    def test_ph_two_decimals_valid(self) -> None:
+        """pH with 2 decimals should be accepted."""
+        value, reason = validation.validate_reading("7.01", "ph")
+        assert value == 7.01
+        assert reason is None
+        
+        value, reason = validation.validate_reading("13.99", "ph")
+        assert value == 13.99
+        assert reason is None
+
+    def test_ph_three_decimals_still_valid(self) -> None:
+        """pH with 3 decimals should still be accepted."""
+        value, reason = validation.validate_reading("7.012", "ph")
+        assert value == 7.012
+        assert reason is None
+
+    def test_ph_one_decimal_still_invalid(self) -> None:
+        """pH with only 1 decimal should be rejected."""
+        value, reason = validation.validate_reading("7.0", "ph")
+        assert value is None
+        assert "format" in reason.lower()
+
+    def test_ph_four_decimals_invalid(self) -> None:
+        """pH with 4 decimals should be rejected."""
+        value, reason = validation.validate_reading("7.0123", "ph")
+        assert value is None
+        assert "format" in reason.lower()
+
+
+class TestStreamAcceptanceInCalibration:
+    """Test that continuous stream is accepted when mode is calibration.
+    
+    Stream acceptance must not depend solely on the last C,? reply:
+    accept when state.continuous is True OR configured mode is calibration.
+    """
+
+    def test_calibration_mode_logic(self) -> None:
+        """Verify the stream acceptance logic for calibration mode."""
+        # Simulate the logic from coordinator._apply_lines
+        def is_reading_source(last_command, state_continuous, mode):
+            cmd_verb = (last_command or "").split(",", 1)[0].lower()
+            is_continuous_stream = (
+                last_command is None
+                and (state_continuous is True or mode == "calibration")
+            )
+            return cmd_verb == "r" or is_continuous_stream
+        
+        # R command always allowed
+        assert is_reading_source("R", False, "exploitation") is True
+        assert is_reading_source("R", False, "calibration") is True
+        
+        # Stream with state.continuous=True
+        assert is_reading_source(None, True, "exploitation") is True
+        assert is_reading_source(None, True, "calibration") is True
+        
+        # Stream in calibration mode (even if C,? not received yet)
+        assert is_reading_source(None, False, "calibration") is True
+        assert is_reading_source(None, None, "calibration") is True
+        
+        # Stream in exploitation without continuous=True: NOT allowed
+        assert is_reading_source(None, False, "exploitation") is False
+        assert is_reading_source(None, None, "exploitation") is False
+        
+        # Non-R commands never allowed
+        assert is_reading_source("Export", True, "calibration") is False
+        assert is_reading_source("Cal,mid", True, "calibration") is False
+        assert is_reading_source("Import,9E6B", True, "calibration") is False

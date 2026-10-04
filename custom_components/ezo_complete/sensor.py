@@ -58,6 +58,7 @@ def _reading_description(profile: ProbeProfile) -> EzoSensorEntityDescription:
         attrs["filter_type"] = state.filter_type
         attrs["filter_samples"] = state.filter_window
         attrs["rejected_readings"] = state.rejected_readings
+        attrs["consecutive_rejected"] = state.consecutive_rejected
         return attrs
 
     return EzoSensorEntityDescription(

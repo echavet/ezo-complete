@@ -837,7 +837,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             self._deferred_temp_push_task.cancel()
             self._deferred_temp_push_task = None
         
-        self._deferred_temp_push_task = self.hass.async_create_task(
+        self._deferred_temp_push_task = self.entry.async_create_background_task(
+            self.hass,
             self._deferred_temp_push_loop(delay),
             name=f"{DOMAIN}_deferred_temp_push",
         )
@@ -1060,12 +1061,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         
         # Determine if readings are allowed from this source:
         # - R command response
-        # - Continuous stream (last_command is None and device is in continuous mode)
+        # - Continuous stream (last_command is None) when:
+        #   - state.continuous is True (C,? confirmed streaming), OR
+        #   - configured mode is calibration (we sent C,n ourselves)
         cmd_verb = (last_command or "").split(",", 1)[0].lower()
-        is_reading_source = (
-            cmd_verb == "r"
-            or (last_command is None and state.continuous is True)
+        is_continuous_stream = (
+            last_command is None
+            and (state.continuous is True or self.mode == MODE_CALIBRATION)
         )
+        is_reading_source = cmd_verb == "r" or is_continuous_stream
         
         for line in lines:
             self._raw_history.append(line.raw)
@@ -1088,14 +1092,26 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                     context=f"from {last_command or 'continuous'}",
                 )
                 if value is None:
-                    _LOGGER.debug(
-                        "EZO reading rejected: %s (counter=%d)",
-                        reason,
-                        state.rejected_readings + 1,
-                    )
                     state.rejected_readings += 1
+                    state.consecutive_rejected += 1
+                    _LOGGER.debug(
+                        "EZO reading rejected: %s (total=%d, consecutive=%d)",
+                        reason,
+                        state.rejected_readings,
+                        state.consecutive_rejected,
+                    )
+                    # Log WARNING after 10 consecutive rejections (once)
+                    if state.consecutive_rejected == 10:
+                        _LOGGER.warning(
+                            "EZO %s: 10 consecutive readings rejected. "
+                            "Last raw line: '%s'. Check probe/connection.",
+                            self.profile.kind,
+                            line.raw,
+                        )
                     continue
                 
+                # Valid reading - reset consecutive counter
+                state.consecutive_rejected = 0
                 raw_value = value
                 state.reading_raw = raw_value
                 if self.mode == MODE_EXPLOITATION:
