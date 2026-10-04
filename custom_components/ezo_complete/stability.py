@@ -81,6 +81,10 @@ class StabilityWindow:
         """Update the expected reading interval (e.g. when C,n changes)."""
         self._interval_s = interval_s
 
+    def reset(self) -> None:
+        """Clear accumulated samples (e.g. when switching from continuous to polling)."""
+        self._samples.clear()
+
     def push(self, value: float, now: float) -> StabilitySnapshot:
         self._samples.append((now, value))
         cutoff = now - self._window_s

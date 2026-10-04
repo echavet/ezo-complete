@@ -27,6 +27,7 @@ from .codec import (
     command_succeeded,
     compact_export_dump,
     is_export_data_line,
+    is_reading_in_range,
     is_usb_product_name,
     parse_cal_points,
     parse_continuous,
@@ -228,6 +229,18 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
     async def async_calibrate(self, slot: str) -> None:
         value = self.cal_setpoint(slot)
         command = self.profile.cal_set_command(slot, value)
+        if (
+            slot == "mid"
+            and self.profile.kind == "ph"
+            and (self.data.cal_points or 0) >= 2
+        ):
+            self._notify(
+                f"{DOMAIN}_{self.entry.entry_id}_cal_mid_warning",
+                "EZO Complete — pH calibration",
+                "Attention : Cal,mid sur une sonde pH déjà calibrée 2+ points "
+                "efface les points low/high (comportement Atlas). "
+                "La calibration continue.",
+            )
         await self._async_run_calibration(command)
 
     async def async_calibrate_clear(self) -> None:
@@ -422,14 +435,21 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 translation_key="restore_missing",
                 translation_placeholders={"path": str(path)},
             )
+        _LOGGER.warning(
+            "Restoring calibration from %s without confirmation — "
+            "this overwrites the current device calibration",
+            path,
+        )
         await self.async_import_calibration(payload)
         state = self.data.copy()
         state.restore_path = str(path)
         self.async_set_updated_data(state)
+        export_timestamp = self.data.export_at or "unknown"
         self._notify(
             f"{DOMAIN}_{self.entry.entry_id}_restore",
             "EZO Complete — restore",
-            f"Calibration réécrite depuis {path}",
+            f"Calibration réécrite depuis {path}\n"
+            f"Export d'origine : {export_timestamp}",
         )
         return payload
 
@@ -621,6 +641,13 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         for line in lines:
             self._raw_history.append(line.raw)
             if line.kind is LineKind.READING and line.value is not None:
+                if not is_reading_in_range(line.value, self.profile.kind):
+                    _LOGGER.debug(
+                        "EZO reading %s out of range for %s, ignoring",
+                        line.value,
+                        self.profile.kind,
+                    )
+                    continue
                 state.reading = line.value
                 state.sleeping = False
                 self._update_stability(state, line.value)
@@ -662,12 +689,15 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         elif key == "c":
             cont = parse_continuous(raw)
             if cont:
+                was_continuous = state.continuous
                 state.continuous = cont.enabled
                 state.continuous_interval = cont.interval or state.continuous_interval
                 if cont.enabled and cont.interval:
                     self._stability.set_interval(float(cont.interval))
                 elif not cont.enabled:
-                    self._stability.set_interval(None)
+                    self._stability.set_interval(self.update_interval.total_seconds())
+                    if was_continuous:
+                        self._stability.reset()
         elif key == "cal":
             points = parse_cal_points(raw)
             if points is not None:

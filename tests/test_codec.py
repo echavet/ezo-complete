@@ -333,3 +333,105 @@ def test_export_store(tmp_path) -> None:
     assert restore.endswith("abc_def.import_calibration")
     assert store.read_restore() == "00CB213F0100\n9E6B"
     assert Path(archive).read_text(encoding="ascii") == "00CB213F0100\n9E6B\n"
+
+
+def test_export_hex_rejected_by_range_check() -> None:
+    """Hex export lines that parse as numbers are rejected by range check.
+    
+    Lines like '010101000080' are valid numbers (~1.01e10) and thus parsed
+    as READING. The fix is that is_reading_in_range() rejects them because
+    they are way outside pH (-1.6..15.6) or ORP (-1019.9..1019.9 mV) bounds.
+    """
+    hex_lines_as_numbers = ["010101000080", "00CB213F0100", "0040B1C6A8D3"]
+    for line in hex_lines_as_numbers:
+        parsed = codec.parse_line(line)
+        if parsed.kind is codec.LineKind.READING and parsed.value is not None:
+            assert not codec.is_reading_in_range(parsed.value, "ph"), \
+                f"{line} ({parsed.value}) should be out of pH range"
+            assert not codec.is_reading_in_range(parsed.value, "orp"), \
+                f"{line} ({parsed.value}) should be out of ORP range"
+    
+    short_hex = ["9E6B"]
+    for line in short_hex:
+        parsed = codec.parse_line(line)
+        assert parsed.kind is codec.LineKind.OTHER, f"{line} should be OTHER (contains letters)"
+
+
+def test_is_reading_in_range_ph() -> None:
+    """pH readings must be within -1.6..15.6 (datasheet)."""
+    assert codec.is_reading_in_range(7.0, "ph")
+    assert codec.is_reading_in_range(0.0, "ph")
+    assert codec.is_reading_in_range(-1.6, "ph")
+    assert codec.is_reading_in_range(15.6, "ph")
+    assert codec.is_reading_in_range(14.0, "ph")
+    assert not codec.is_reading_in_range(-2.0, "ph")
+    assert not codec.is_reading_in_range(16.0, "ph")
+    assert not codec.is_reading_in_range(1.01e10, "ph")
+    assert not codec.is_reading_in_range(-1000.0, "ph")
+
+
+def test_is_reading_in_range_orp() -> None:
+    """ORP readings must be within -1019.9..1019.9 mV (datasheet)."""
+    assert codec.is_reading_in_range(225.0, "orp")
+    assert codec.is_reading_in_range(0.0, "orp")
+    assert codec.is_reading_in_range(-1019.9, "orp")
+    assert codec.is_reading_in_range(1019.9, "orp")
+    assert codec.is_reading_in_range(-500.0, "orp")
+    assert not codec.is_reading_in_range(-1020.0, "orp")
+    assert not codec.is_reading_in_range(1020.0, "orp")
+    assert not codec.is_reading_in_range(1e10, "orp")
+
+
+def test_is_reading_in_range_unknown_kind() -> None:
+    """Unknown device kinds should accept any value."""
+    assert codec.is_reading_in_range(1e10, "unknown")
+    assert codec.is_reading_in_range(-1e10, "other")
+
+
+def test_is_calibration_command() -> None:
+    """Identify Cal,<value> commands vs Cal,? and Cal,clear."""
+    assert codec.is_calibration_command("Cal,225")
+    assert codec.is_calibration_command("Cal,mid,7.00")
+    assert codec.is_calibration_command("Cal,low,4.00")
+    assert codec.is_calibration_command("Cal,high,10.00")
+    assert not codec.is_calibration_command("Cal,?")
+    assert not codec.is_calibration_command("Cal,clear")
+    assert not codec.is_calibration_command("Cal,")
+    assert not codec.is_calibration_command("C,0")
+    assert not codec.is_calibration_command("R")
+    assert not codec.is_calibration_command(None)
+
+
+def test_command_succeeded_cal_requires_ok() -> None:
+    """Cal commands require *OK response; empty = error."""
+    ok_response = codec.EzoResponse(
+        command="Cal,225",
+        lines=[codec.parse_line("*OK")],
+    )
+    assert codec.command_succeeded(ok_response)
+
+    empty_response = codec.EzoResponse(command="Cal,225", lines=[])
+    assert not codec.command_succeeded(empty_response)
+
+    ok_response_ph = codec.EzoResponse(
+        command="Cal,mid,7.00",
+        lines=[codec.parse_line("*OK")],
+    )
+    assert codec.command_succeeded(ok_response_ph)
+
+    empty_response_ph = codec.EzoResponse(command="Cal,mid,7.00", lines=[])
+    assert not codec.command_succeeded(empty_response_ph)
+
+
+def test_command_succeeded_non_cal_ack_accepts_empty() -> None:
+    """Non-Cal ACK commands still accept empty responses."""
+    empty_c0 = codec.EzoResponse(command="C,0", lines=[])
+    assert codec.command_succeeded(empty_c0)
+
+    empty_l1 = codec.EzoResponse(command="L,1", lines=[])
+    assert codec.command_succeeded(empty_l1)
+
+
+def test_response_code_enable_commands_includes_ok1() -> None:
+    """RESPONSE_CODE_ENABLE_COMMANDS should include *OK,1."""
+    assert "*OK,1" in const.RESPONSE_CODE_ENABLE_COMMANDS

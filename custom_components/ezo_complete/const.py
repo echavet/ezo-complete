@@ -71,5 +71,10 @@ STATUS_REASON_MAP: dict[str, str] = {
     "U": "unknown",
 }
 
-RESPONSE_CODE_ENABLE_COMMANDS: tuple[str, ...] = ("RESPONSE,1", "O,1", "OK,1")
+RESPONSE_CODE_ENABLE_COMMANDS: tuple[str, ...] = ("RESPONSE,1", "O,1", "OK,1", "*OK,1")
+
+PH_READING_MIN = -1.6
+PH_READING_MAX = 15.6
+ORP_READING_MIN = -1019.9
+ORP_READING_MAX = 1019.9
 ATTRIBUTION = "Data provided by Atlas Scientific EZO Complete"

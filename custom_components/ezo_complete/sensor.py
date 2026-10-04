@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -24,6 +25,16 @@ from .models import EzoDeviceState
 from .profiles import ProbeProfile
 
 PARALLEL_UPDATES = 0
+
+
+def _parse_export_timestamp(iso_str: str | None) -> datetime | None:
+    """Parse ISO timestamp string to timezone-aware datetime for TIMESTAMP sensor."""
+    if not iso_str:
+        return None
+    try:
+        return datetime.fromisoformat(iso_str)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -100,7 +111,8 @@ def _shared_sensors(coordinator: EzoCoordinator) -> tuple[EzoSensorEntityDescrip
             key="calibration_export",
             translation_key="calibration_export",
             entity_category=EntityCategory.DIAGNOSTIC,
-            value_fn=lambda s: s.export_at,
+            device_class=SensorDeviceClass.TIMESTAMP,
+            value_fn=lambda s: _parse_export_timestamp(s.export_at),
             extra_fn=lambda s: {
                 "payload": s.export_data,
                 "archive_path": s.export_path,

@@ -2,6 +2,24 @@
 
 Versioning follows Home Assistant CalVer: **`YYYY.M.patch`** (M = month, patch increments for hotfixes — not the calendar day). First release of this repo was `2026.8.26`; hotfixes are `2026.8.26.1`, `.2`, …
 
+## [2026.10.4] - 2026-10-04
+
+### Fixed
+
+- **Export hex lines parsed as readings**: During calibration export (`Export` command), hex payload lines (e.g. `010101000080`) were incorrectly parsed as pH readings, resulting in values like ~1.01e10 appearing in `sensor.ezo_ph_ph`. Now: readings are paused during export using the same hold/pause mechanism as calibration, and a validity range check rejects out-of-range values (pH -1.6..15.6, ORP -1019.9..1019.9 mV) with a debug log.
+
+- **Export date sensors missing device_class**: The `sensor.*_export_de_calibration` sensors now use `SensorDeviceClass.TIMESTAMP` and return a timezone-aware datetime instead of an ISO string. Home Assistant can now properly display and format the timestamp.
+
+- **Stability never becomes true in polling mode**: When continuous mode was off, `set_interval(None)` was called, requiring 5 samples in a 10 s window—but with 5 s polling, only ~3 samples could fit. Now the polling interval (`update_interval`) is used for stability calculation in polling mode, and the stability window resets when switching from continuous to polling.
+
+- **ACK handling for Cal commands**: Empty responses to Cal commands (e.g. `Cal,mid,7.00`) were incorrectly treated as success. Now Cal commands require an explicit `*OK` response; empty response = error. Also added `*OK,1` to `RESPONSE_CODE_ENABLE_COMMANDS`.
+
+### Changed
+
+- **Restore calibration button**: Now logs a warning before restoring and includes the source file path and original export timestamp in the notification (minimal change, no confirmation dialog added).
+
+- **Cal,mid on 2+ point pH calibration**: Before sending `Cal,mid` when `cal_points >= 2`, a persistent notification warns that mid calibration clears low/high points (Atlas behaviour). Calibration proceeds without blocking.
+
 ## [2026.9.28] - 2026-09-28
 
 ### Fixed
