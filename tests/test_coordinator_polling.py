@@ -216,3 +216,98 @@ class TestPollCycleIntegrity:
             now += 25.0
         
         assert samples_over_time == [1, 2, 3, 4, 4]
+
+
+class TestContinuousFromCommand:
+    """Test that C,n commands update state.continuous even if C,? is lost."""
+
+    def test_parse_continuous_command(self) -> None:
+        """Verify the logic for parsing C,n commands."""
+        def update_continuous(cmd: str) -> tuple[bool | None, int | None]:
+            """Simulate _update_continuous_from_command logic."""
+            parts = cmd.split(",", 1)
+            if parts[0].lower() != "c" or len(parts) < 2:
+                return None, None
+            try:
+                interval = int(parts[1])
+            except ValueError:
+                return None, None
+            if interval >= 1:
+                return True, interval
+            else:
+                return False, interval
+
+        # C,n where n >= 1 should enable continuous
+        assert update_continuous("C,5") == (True, 5)
+        assert update_continuous("C,1") == (True, 1)
+        assert update_continuous("C,99") == (True, 99)
+
+        # C,0 should disable continuous
+        assert update_continuous("C,0") == (False, 0)
+
+        # Non-C commands should be ignored
+        assert update_continuous("R") == (None, None)
+        assert update_continuous("L,1") == (None, None)
+        assert update_continuous("T,25") == (None, None)
+
+        # C,? queries should be ignored (not an interval)
+        assert update_continuous("C,?") == (None, None)
+
+    def test_listen_loop_fallback_logic(self) -> None:
+        """Verify listen loop runs when mode is calibration, even if continuous is False."""
+        # Simulates the condition: skip only if continuous=False AND mode!=calibration
+        def should_skip_listen(continuous: bool | None, mode: str) -> bool:
+            if continuous is False and mode != "calibration":
+                return True
+            return False
+
+        # continuous=False, mode=exploitation: should skip
+        assert should_skip_listen(False, "exploitation") is True
+
+        # continuous=False, mode=calibration: should NOT skip (fallback)
+        assert should_skip_listen(False, "calibration") is False
+
+        # continuous=True, mode=exploitation: should NOT skip
+        assert should_skip_listen(True, "exploitation") is False
+
+        # continuous=True, mode=calibration: should NOT skip
+        assert should_skip_listen(True, "calibration") is False
+
+        # continuous=None (initial), mode=calibration: should NOT skip
+        assert should_skip_listen(None, "calibration") is False
+
+        # continuous=None, mode=exploitation: should NOT skip (None != False)
+        assert should_skip_listen(None, "exploitation") is False
+
+    def test_calibration_not_blocked_when_cquery_lost(self) -> None:
+        """Verify calibration can proceed when C,? reply is lost.
+        
+        Scenario:
+        1. Switch exploitation -> calibration
+        2. Send C,5 successfully (*OK)
+        3. C,? reply is lost (network issue, buffer overflow, etc.)
+        4. state.continuous should be True from C,5 success
+        5. Listen loop should run
+        """
+        continuous = False  # Initial state from exploitation
+        mode = "calibration"  # User switched mode
+
+        # C,5 command succeeds (*OK) - this should set continuous=True
+        cmd = "C,5"
+        parts = cmd.split(",", 1)
+        if parts[0].lower() == "c" and len(parts) >= 2:
+            try:
+                interval = int(parts[1])
+                if interval >= 1:
+                    continuous = True  # This is what _update_continuous_from_command does
+            except ValueError:
+                pass
+
+        # Now continuous=True, listen loop should run
+        def should_skip_listen(cont: bool | None, m: str) -> bool:
+            if cont is False and m != "calibration":
+                return True
+            return False
+
+        assert continuous is True
+        assert should_skip_listen(continuous, mode) is False

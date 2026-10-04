@@ -1010,6 +1010,8 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             return response
         self._apply_lines(response.lines, last_command=cmd)
         if command_succeeded(response):
+            # Track continuous mode state from C,n commands even if C,? is lost
+            self._update_continuous_from_command(cmd)
             return response
         if ignore_error:
             return response
@@ -1032,13 +1034,39 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             return True
         return (time.monotonic() - last) >= STALE_WAKE_SECONDS
 
+    def _update_continuous_from_command(self, cmd: str) -> None:
+        """Update state.continuous when C,n succeeds, even if C,? reply is lost.
+        
+        This ensures calibration mode is not blocked when the C,? query fails.
+        The listen loop needs continuous=True (or mode=calibration) to run.
+        """
+        parts = cmd.split(",", 1)
+        if parts[0].lower() != "c" or len(parts) < 2:
+            return
+        try:
+            interval = int(parts[1])
+        except ValueError:
+            return
+        state = self.data.copy()
+        if interval >= 1:
+            state.continuous = True
+            state.continuous_interval = interval
+        else:
+            state.continuous = False
+        self.async_set_updated_data(state)
+
     async def _listen_loop(self) -> None:
         while True:
             try:
                 if self._pause_listen or not self.session.connected:
                     await asyncio.sleep(0.2)
                     continue
-                if self.data.sleeping or self.data.continuous is False:
+                if self.data.sleeping:
+                    await asyncio.sleep(0.5)
+                    continue
+                # Run listen loop if continuous is True OR mode is calibration
+                # (mode check is fallback when C,? reply is lost)
+                if self.data.continuous is False and self.mode != MODE_CALIBRATION:
                     await asyncio.sleep(0.5)
                     continue
                 lines = await self.session.listen(0.4)
