@@ -526,20 +526,16 @@ class EzoCompleteOptionsFlow(OptionsFlow):
         }
 
         if profile is not None and profile.supports_temperature:
-            current_temp_entity = options.get(CONF_TEMPERATURE_ENTITY)
-            if current_temp_entity:
-                schema[
-                    vol.Optional(CONF_TEMPERATURE_ENTITY, default=current_temp_entity)
-                ] = EntitySelector(
-                    EntitySelectorConfig(
-                        domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
-                    )
+            schema[vol.Optional(CONF_TEMPERATURE_ENTITY)] = EntitySelector(
+                EntitySelectorConfig(
+                    domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
                 )
-            else:
-                schema[vol.Optional(CONF_TEMPERATURE_ENTITY)] = EntitySelector(
-                    EntitySelectorConfig(
-                        domain="sensor", device_class=SensorDeviceClass.TEMPERATURE
-                    )
-                )
+            )
 
-        return self.async_show_form(step_id="init", data_schema=vol.Schema(schema))
+        suggested_values = dict(options)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(schema), suggested_values
+            ),
+        )

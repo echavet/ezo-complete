@@ -728,15 +728,20 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
 
         @callback
         def _on_temp(event: Event) -> None:
+            if self.persisted_sleep:
+                return
             self.hass.async_create_task(self._async_push_temperature())
 
         self._temp_unsub = async_track_state_change_event(
             self.hass, [entity_id], _on_temp
         )
-        self.hass.async_create_task(self._async_push_temperature())
+        if not self.persisted_sleep:
+            self.hass.async_create_task(self._async_push_temperature())
 
     async def _async_push_temperature(self) -> None:
         if not self.profile.supports_temperature:
+            return
+        if self.persisted_sleep:
             return
         entity_id = self.entry.options.get(CONF_TEMPERATURE_ENTITY)
         if not entity_id:

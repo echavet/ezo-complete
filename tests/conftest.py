@@ -1,15 +1,16 @@
-"""Pytest fixtures for EZO Complete integration tests."""
+"""Pytest fixtures for EZO Complete unit tests.
+
+This file contains only pure Python fixtures that don't require Home Assistant.
+HA-specific fixtures are in conftest_ha.py (loaded only when HA is available).
+"""
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import Generator
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant import loader
-from homeassistant.core import HomeAssistant
 
 from custom_components.ezo_complete.codec import (
     DeviceInfoResponse,
@@ -27,30 +28,6 @@ from custom_components.ezo_complete.const import (
     DOMAIN,
     MODE_CALIBRATION,
 )
-
-pytest_plugins = ["pytest_homeassistant_custom_component"]
-
-
-@pytest.fixture
-async def enable_custom_integrations(hass: HomeAssistant) -> None:
-    """Enable custom integrations defined in the test dir.
-    
-    Override the default fixture to work with async hass fixture.
-    """
-    hass.data.pop(loader.DATA_CUSTOM_COMPONENTS, None)
-
-
-@pytest.fixture(autouse=True)
-def mock_usb_setup(hass: HomeAssistant) -> Generator[None, None, None]:
-    """Mock USB component setup to avoid pyudev dependency."""
-    async def async_setup(hass_obj, config):
-        return True
-
-    with patch(
-        "homeassistant.components.usb.async_setup",
-        side_effect=async_setup,
-    ):
-        yield
 
 
 class FakeSerialSession:
@@ -256,47 +233,3 @@ def mock_config_flow_probe(fake_serial_session: FakeSerialSession) -> Generator[
         side_effect=_probe,
     ) as mock:
         yield mock
-
-
-def mock_config_entry(
-    hass,
-    *,
-    unique_id: str = "ABC123_ph",
-    version: int = 3,
-    options: dict | None = None,
-) -> Any:
-    """Create a mock config entry."""
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-    default_options = {
-        CONF_MODE: DEFAULT_MODE,
-        CONF_MEASUREMENT_INTERVAL: DEFAULT_MEASUREMENT_INTERVAL,
-        "filter_type": "median",
-        "filter_window": 5,
-        CONF_CONTINUOUS_INTERVAL: DEFAULT_CALIBRATION_INTERVAL,
-        "stability_window": 10.0,
-        "stability_max_span": 3.0,
-        "calibration_auto_return": 15,
-        "sleep": False,
-    }
-
-    if options:
-        default_options.update(options)
-
-    entry = MockConfigEntry(
-        version=version,
-        minor_version=0,
-        domain=DOMAIN,
-        title="EZO pH",
-        data={
-            "port": "/dev/ttyUSB0",
-            "baudrate": 9600,
-            "name": "EZO pH",
-            "serial_number": "ABC123",
-            "device_type": "pH",
-            "firmware": "2.15",
-        },
-        unique_id=unique_id,
-        options=default_options,
-    )
-    return entry

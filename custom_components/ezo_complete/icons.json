@@ -42,7 +42,7 @@
       "ph_mid": { "default": "mdi:gauge" },
       "ph_low": { "default": "mdi:gauge" },
       "ph_high": { "default": "mdi:gauge" },
-      "continuous_interval": { "default": "mdi:timer-outline" },
+      "calibration_interval": { "default": "mdi:timer-outline" },
       "measurement_interval": { "default": "mdi:timer-outline" },
       "filter_window": { "default": "mdi:filter-outline" },
       "stability_window": { "default": "mdi:timer-sand" },
