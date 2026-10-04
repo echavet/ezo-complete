@@ -8,12 +8,36 @@ These tests verify:
 
 from __future__ import annotations
 
-import asyncio
-from datetime import timedelta
-from unittest.mock import AsyncMock, MagicMock, patch
-import time
+import importlib.util
+import sys
+import types
+from pathlib import Path
 
 import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+PKG = ROOT / "custom_components" / "ezo_complete"
+
+
+def _load(name: str, path: Path):
+    if "ezo_complete" not in sys.modules:
+        pkg = types.ModuleType("ezo_complete")
+        pkg.__path__ = [str(PKG)]
+        sys.modules["ezo_complete"] = pkg
+    if "ezo_complete.profiles" not in sys.modules:
+        sub = types.ModuleType("ezo_complete.profiles")
+        sub.__path__ = [str(PKG / "profiles")]
+        sys.modules["ezo_complete.profiles"] = sub
+    spec = importlib.util.spec_from_file_location(name, path)
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+const = _load("ezo_complete.const", PKG / "const.py")
+stability = _load("ezo_complete.stability", PKG / "stability.py")
 
 
 class TestFixedRatePolling:
@@ -84,35 +108,28 @@ class TestTemperatureIntegration:
 
     def test_temperature_push_coalesce_logic(self) -> None:
         """Verify temperature push is rate-limited (>= 0.05°C change, 30s minimum)."""
-        from custom_components.ezo_complete.const import (
-            TEMPERATURE_PUSH_DELTA,
-            TEMPERATURE_PUSH_MIN_INTERVAL,
-        )
-        
-        assert TEMPERATURE_PUSH_DELTA == 0.05
-        assert TEMPERATURE_PUSH_MIN_INTERVAL == 30.0
+        assert const.TEMPERATURE_PUSH_DELTA == 0.05
+        assert const.TEMPERATURE_PUSH_MIN_INTERVAL == 30.0
         
         last_pushed = 25.0
         new_temp = 25.03
-        should_push = abs(new_temp - last_pushed) >= TEMPERATURE_PUSH_DELTA
+        should_push = abs(new_temp - last_pushed) >= const.TEMPERATURE_PUSH_DELTA
         assert not should_push, "Change < 0.05°C should not trigger push"
         
         new_temp = 25.05
-        should_push = abs(new_temp - last_pushed) >= TEMPERATURE_PUSH_DELTA
+        should_push = abs(new_temp - last_pushed) >= const.TEMPERATURE_PUSH_DELTA
         assert should_push, "Change >= 0.05°C should trigger push"
 
     def test_temperature_rate_limit_logic(self) -> None:
         """Verify temperature push respects 30s minimum interval."""
-        from custom_components.ezo_complete.const import TEMPERATURE_PUSH_MIN_INTERVAL
-        
         last_push_at = 100.0
         
         now = 120.0
-        should_allow = (now - last_push_at) >= TEMPERATURE_PUSH_MIN_INTERVAL
+        should_allow = (now - last_push_at) >= const.TEMPERATURE_PUSH_MIN_INTERVAL
         assert not should_allow, "Push at 20s after last should be blocked"
         
         now = 130.0
-        should_allow = (now - last_push_at) >= TEMPERATURE_PUSH_MIN_INTERVAL
+        should_allow = (now - last_push_at) >= const.TEMPERATURE_PUSH_MIN_INTERVAL
         assert should_allow, "Push at 30s after last should be allowed"
 
     def test_poll_cycle_simulation(self) -> None:
@@ -180,9 +197,7 @@ class TestPollCycleIntegrity:
 
     def test_effective_window_maintained(self) -> None:
         """Verify stability effective window is maintained correctly."""
-        from custom_components.ezo_complete.stability import StabilityWindow
-        
-        window = StabilityWindow(
+        window = stability.StabilityWindow(
             window_s=10.0,
             min_samples=5,
             span_threshold_mv=5.0,
