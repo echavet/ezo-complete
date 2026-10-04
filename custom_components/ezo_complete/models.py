@@ -46,6 +46,7 @@ class EzoDeviceState:
     stability_required: int = 5
     stability_span_threshold: float | None = None
     stability_span_mv: float | None = None
+    stability_effective_window: float | None = None
     filter_type: str | None = None
     filter_window: int | None = None
 

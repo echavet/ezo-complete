@@ -377,3 +377,121 @@ class TestPollingModeStability:
         assert snap.sample_count == 3
         assert not snap.stable
         assert snap.required_samples == 5
+
+
+class TestEffectiveWindowExpansion:
+    """Test stability window auto-expansion for slow polling intervals.
+    
+    Bug fix for 2026.10.4.2: In exploitation mode with slow polling (e.g. 25s),
+    the configured 10s window was too small to fit 3 samples. The window now
+    automatically expands to required_samples × interval.
+    """
+
+    def test_effective_window_expands_for_slow_polling(self) -> None:
+        """With 25s polling and 10s configured window, effective window expands to 75s."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span_threshold_mv=5.0,
+            interval_s=25.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        assert window.required_samples == 3
+        assert window.effective_window_s == 75.0  # 3 samples × 25s
+        
+    def test_effective_window_unchanged_for_fast_polling(self) -> None:
+        """With 1s polling, configured 10s window is large enough."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span_threshold_mv=5.0,
+            interval_s=1.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        assert window.required_samples == 5
+        assert window.effective_window_s == 10.0
+
+    def test_stability_achievable_with_slow_polling(self) -> None:
+        """Stability should be achievable with 25s polling (production bug repro)."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span_threshold_mv=5.0,  # mV
+            interval_s=25.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        
+        now = 100.0
+        for i in range(2):
+            snap = window.push(320.0, now + i * 25)
+            assert not snap.stable, f"Should not be stable with only {i+1} samples"
+        
+        snap = window.push(322.0, now + 50)
+        assert snap.sample_count == 3
+        assert snap.stable, "Should be stable with 3 samples within span threshold"
+        assert snap.effective_window == 75.0
+
+    def test_old_samples_evicted_at_effective_window_boundary(self) -> None:
+        """Samples older than effective_window_s should be evicted."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span_threshold_mv=5.0,
+            interval_s=25.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        
+        now = 0.0
+        snap = window.push(320.0, now)
+        assert snap.sample_count == 1
+        
+        snap = window.push(320.0, now + 25)
+        assert snap.sample_count == 2
+        
+        snap = window.push(320.0, now + 50)
+        assert snap.sample_count == 3
+        
+        snap = window.push(320.0, now + 75)
+        assert snap.sample_count == 4
+        
+        snap = window.push(320.0, now + 76)
+        assert snap.sample_count == 4, "Sample at t=0 should be evicted (>75s old)"
+
+    def test_exploitation_mode_60s_interval(self) -> None:
+        """With 60s measurement interval, stability should work (production config)."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span_threshold_mv=3.0,  # pH threshold
+            interval_s=60.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        
+        assert window.required_samples == 3
+        assert window.effective_window_s == 180.0  # 3 × 60s
+        
+        now = 100.0
+        for i in range(3):
+            snap = window.push(7.00, now + i * 60)
+        
+        assert snap.sample_count == 3
+        assert snap.stable
+
+    def test_snapshot_includes_effective_window(self) -> None:
+        """StabilitySnapshot should include effective_window for debugging."""
+        window = stability.StabilityWindow(
+            window_s=10.0,
+            min_samples=5,
+            span_threshold_mv=5.0,
+            interval_s=25.0,
+            min_samples_floor=3,
+            min_samples_ceiling=5,
+        )
+        
+        snap = window.push(320.0, 100.0)
+        assert snap.effective_window == 75.0
