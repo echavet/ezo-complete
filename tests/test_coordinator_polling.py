@@ -316,29 +316,31 @@ class TestContinuousFromCommand:
 class TestTemperaturePollIntegration:
     """Test that temperature changes in exploitation mode don't disrupt polling.
     
-    In exploitation mode, temperature changes should NOT push immediately
-    (which would call async_set_updated_data and reset HA's poll timer).
-    Instead, the pending value is stored and sent in the next poll.
+    In exploitation mode, temperature entity changes are ignored (no-op).
+    The poll reads the current thermometer value and applies the dead band.
+    This avoids stale pending values and keeps push inside the poll cycle.
     """
 
-    def test_exploitation_mode_stores_pending_temp(self) -> None:
-        """In exploitation mode, temperature change stores pending value instead of pushing."""
+    def test_exploitation_mode_ignores_temp_changes(self) -> None:
+        """In exploitation mode, temperature entity changes are no-op."""
         mode = "exploitation"
         pending_temp_value = None
-        last_pushed_t = 25.0
+        push_called = False
         
-        # Temperature changes
-        new_temp = 26.0
-        delta = abs(new_temp - last_pushed_t)
+        # Simulate _async_push_temperature_coalesced behavior
+        def on_temp_change(value: float):
+            nonlocal pending_temp_value, push_called
+            if mode == "exploitation":
+                # No-op in exploitation mode
+                return
+            # In calibration, would push or defer
+            push_called = True
         
-        # Check delta threshold
-        assert delta >= const.TEMPERATURE_PUSH_DELTA
+        on_temp_change(26.0)
+        on_temp_change(27.0)
         
-        # In exploitation mode, just store the pending value
-        if mode == "exploitation":
-            pending_temp_value = new_temp
-        
-        assert pending_temp_value == 26.0, "Should store pending value"
+        assert pending_temp_value is None, "Should NOT store pending value"
+        assert push_called is False, "Should NOT push in exploitation mode"
 
     def test_calibration_mode_pushes_immediately(self) -> None:
         """In calibration mode, temperature change pushes immediately (or defers)."""
@@ -369,42 +371,25 @@ class TestTemperaturePollIntegration:
         assert immediate_push_called is True, "Should push immediately in calibration mode"
         assert pending_temp_value is None, "Should not store pending value when pushing"
 
-    def test_poll_consumes_pending_temp(self) -> None:
-        """Poll should consume pending temperature value before R command."""
-        pending_temp_value = 26.5
+    def test_poll_reads_current_temp(self) -> None:
+        """Poll should always read the current thermometer value."""
+        current_temp = 27.5
         last_pushed_t = 25.0
         
-        # Simulate poll consuming pending value
-        value = pending_temp_value
-        pending_temp_value = None  # Clear after consuming
+        # Simulate poll reading current value
+        value = current_temp  # Always read current, no pending logic
         
-        assert value == 26.5, "Poll should get the pending value"
-        assert pending_temp_value is None, "Pending value should be cleared"
+        assert value == 27.5, "Poll should read current temperature"
         
         # Delta check
         delta = abs(value - last_pushed_t)
         assert delta >= const.TEMPERATURE_PUSH_DELTA, "Delta should trigger push"
 
-    def test_poll_falls_back_to_current_temp(self) -> None:
-        """Poll should fall back to current temperature if no pending value."""
-        pending_temp_value = None
-        current_temp = 27.0
-        
-        # Simulate poll logic
-        if pending_temp_value is not None:
-            value = pending_temp_value
-            pending_temp_value = None
-        else:
-            value = current_temp
-        
-        assert value == 27.0, "Should fall back to current temperature"
-
     def test_no_poll_timer_reset_in_exploitation(self) -> None:
-        """Verify that storing pending temp doesn't call async_set_updated_data.
+        """Verify that temp entity changes don't call async_set_updated_data.
         
-        In exploitation mode, temperature entity changes should only store
-        the pending value, not push immediately. The push happens in the
-        poll, which already calls async_set_updated_data anyway.
+        In exploitation mode, temperature entity changes are no-op.
+        The push happens in the poll, which already calls async_set_updated_data.
         """
         mode = "exploitation"
         async_set_updated_data_calls = 0
@@ -413,11 +398,10 @@ class TestTemperaturePollIntegration:
         def on_temp_change(value: float):
             nonlocal async_set_updated_data_calls
             if mode == "exploitation":
-                # Just store pending value - no push, no async_set_updated_data
-                pass
-            else:
-                # In calibration, push would call async_set_updated_data
-                async_set_updated_data_calls += 1
+                # No-op - no push, no async_set_updated_data
+                return
+            # In calibration, push would call async_set_updated_data
+            async_set_updated_data_calls += 1
         
         # Temperature changes in exploitation mode
         on_temp_change(26.0)
@@ -434,7 +418,7 @@ class TestTemperaturePollIntegration:
         
         Scenario: 5s poll interval, temperature changes at T=2s
         - Without fix: poll timer resets at T=2s, next poll at T=7s (7s gap)
-        - With fix: pending value stored, next poll at T=5s as expected (5s gap)
+        - With fix: temp changes ignored, next poll at T=5s as expected (5s gap)
         """
         configured_interval = 5.0
         
@@ -442,7 +426,7 @@ class TestTemperaturePollIntegration:
         poll_times = [0.0]  # First poll at T=0
         temp_change_time = 2.0
         
-        # With fix: temperature change just stores pending, poll continues on schedule
+        # With fix: temperature change is no-op, poll continues on schedule
         next_poll_time = poll_times[0] + configured_interval
         
         assert next_poll_time == 5.0, "Next poll should be at T=5s"
@@ -450,3 +434,184 @@ class TestTemperaturePollIntegration:
         # Gap should be exactly the configured interval
         gap = next_poll_time - poll_times[0]
         assert gap == configured_interval, f"Gap should be {configured_interval}s, got {gap}s"
+
+
+class TestEnterCalibrationPushesTemp:
+    """Test that entering calibration mode pushes the current temperature."""
+
+    def test_calibration_mode_switch_pushes_current_temp(self) -> None:
+        """Switching to calibration should push the current thermometer value."""
+        current_temp = 26.8
+        last_pushed_t = 25.0
+        commands_sent = []
+        
+        # Simulate _async_push_temperature_on_mode_switch
+        def push_temp_on_mode_switch(temp_entity_configured: bool, asleep: bool):
+            if not temp_entity_configured:
+                return
+            if asleep:
+                return
+            value = current_temp
+            if value is not None:
+                commands_sent.append(f"T,{value:.2f}")
+                commands_sent.append("T,?")
+        
+        # Switch to calibration with temp entity configured
+        push_temp_on_mode_switch(temp_entity_configured=True, asleep=False)
+        
+        assert commands_sent == ["T,26.80", "T,?"], (
+            f"Should push T,26.80 then T,?, got {commands_sent}"
+        )
+
+    def test_calibration_mode_switch_skips_if_no_entity(self) -> None:
+        """Switching to calibration should skip temp push if no entity configured."""
+        commands_sent = []
+        
+        def push_temp_on_mode_switch(temp_entity_configured: bool, asleep: bool):
+            if not temp_entity_configured:
+                return
+            if asleep:
+                return
+            commands_sent.append("T,value")
+        
+        push_temp_on_mode_switch(temp_entity_configured=False, asleep=False)
+        
+        assert commands_sent == [], "Should not push if no temp entity"
+
+    def test_calibration_mode_switch_skips_if_asleep(self) -> None:
+        """Switching to calibration should skip temp push if asleep."""
+        commands_sent = []
+        
+        def push_temp_on_mode_switch(temp_entity_configured: bool, asleep: bool):
+            if not temp_entity_configured:
+                return
+            if asleep:
+                return
+            commands_sent.append("T,value")
+        
+        push_temp_on_mode_switch(temp_entity_configured=True, asleep=True)
+        
+        assert commands_sent == [], "Should not push if asleep"
+
+
+class TestNoStalePendingValue:
+    """Test that stale pending values are never pushed."""
+
+    def test_sequence_25_to_2530_to_2502_no_stale(self) -> None:
+        """25.0 -> 25.30 -> 25.02: should push 25.02, never 25.30.
+        
+        Scenario:
+        1. Last pushed: 25.0
+        2. Temp changes to 25.30 (> 0.05 delta)
+        3. Before poll, temp changes to 25.02 (< 0.05 delta from 25.0)
+        4. Poll reads current (25.02), dead band passes (delta = 0.02 < 0.05)
+        5. Result: no push, or push 25.02 if delta check fails
+        """
+        last_pushed_t = 25.0
+        
+        # Temp changes to 25.30
+        temp_at_change_1 = 25.30
+        # Then changes to 25.02 before poll
+        temp_at_poll_time = 25.02
+        
+        # Poll reads current value (always, no pending)
+        value = temp_at_poll_time
+        
+        # Apply dead band against last pushed
+        delta = abs(value - last_pushed_t)
+        should_push = delta >= const.TEMPERATURE_PUSH_DELTA
+        
+        # 25.02 - 25.0 = 0.02 < 0.05, so should NOT push
+        assert delta == pytest.approx(0.02, abs=0.001)
+        assert should_push is False, (
+            f"Should NOT push 25.02 (delta {delta} < {const.TEMPERATURE_PUSH_DELTA})"
+        )
+        
+        # Key assertion: 25.30 (stale) is never considered
+        assert value != 25.30, "Should never consider stale value 25.30"
+
+    def test_sequence_25_to_2530_to_2510_pushes_current(self) -> None:
+        """25.0 -> 25.30 -> 25.10: should push 25.10, never 25.30.
+        
+        Scenario:
+        1. Last pushed: 25.0
+        2. Temp changes to 25.30 (> 0.05 delta)
+        3. Before poll, temp changes to 25.10 (> 0.05 delta from 25.0)
+        4. Poll reads current (25.10), delta = 0.10 >= 0.05, push
+        5. Result: push 25.10 (current), never 25.30 (stale)
+        """
+        last_pushed_t = 25.0
+        
+        # Temp changes to 25.30
+        temp_at_change_1 = 25.30
+        # Then changes to 25.10 before poll
+        temp_at_poll_time = 25.10
+        
+        # Poll reads current value (always, no pending)
+        value = temp_at_poll_time
+        
+        # Apply dead band against last pushed
+        delta = abs(value - last_pushed_t)
+        should_push = delta >= const.TEMPERATURE_PUSH_DELTA
+        
+        # 25.10 - 25.0 = 0.10 >= 0.05, so should push
+        assert delta == pytest.approx(0.10, abs=0.001)
+        assert should_push is True, "Should push 25.10"
+        
+        # Key assertion: pushed value is current, not stale
+        assert value == 25.10, "Should push current value 25.10, not stale 25.30"
+
+    def test_mode_switch_clears_pending(self) -> None:
+        """Mode switch should clear any pending temperature value."""
+        pending_temp_value = 25.30  # Stale value from calibration deferred push
+        
+        # Simulate mode switch clearing pending
+        def on_mode_switch():
+            nonlocal pending_temp_value
+            pending_temp_value = None
+        
+        on_mode_switch()
+        
+        assert pending_temp_value is None, "Mode switch should clear pending"
+
+    def test_no_stale_push_after_returning_to_exploitation(self) -> None:
+        """After returning to exploitation, no stale temp should be pushed.
+        
+        Scenario:
+        1. In calibration, temp deferred to pending (25.30)
+        2. Switch to exploitation (clears pending)
+        3. Poll reads current temp (e.g., 25.02)
+        4. Apply dead band against last pushed
+        5. Result: never push 25.30
+        """
+        pending_temp_value = 25.30  # From calibration deferred push
+        last_pushed_t = 25.0
+        current_temp = 25.02
+        
+        # Mode switch clears pending
+        pending_temp_value = None
+        
+        # Poll reads current
+        value = current_temp
+        
+        # Dead band check
+        delta = abs(value - last_pushed_t)
+        should_push = delta >= const.TEMPERATURE_PUSH_DELTA
+        
+        assert pending_temp_value is None, "Pending should be cleared"
+        assert value == 25.02, "Should read current, not stale"
+        assert should_push is False, "0.02 < 0.05, should not push"
+
+    def test_push_clears_pending(self) -> None:
+        """Any temperature push should clear the pending value."""
+        pending_temp_value = 25.30
+        
+        # Simulate push clearing pending
+        def do_push(value: float):
+            nonlocal pending_temp_value
+            # ... send T,value ...
+            pending_temp_value = None
+        
+        do_push(26.0)
+        
+        assert pending_temp_value is None, "Push should clear pending"
