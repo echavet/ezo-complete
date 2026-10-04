@@ -380,11 +380,16 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             self._reset_auto_return_timer()
             return
 
+        # Clear any stale pending temperature on mode switch
+        self._pending_temp_value = None
+
         await self._update_options({CONF_MODE: mode})
 
         if mode == MODE_CALIBRATION:
             self._filter.reset()
             self._stability.reset()
+            # Push current temperature immediately when entering calibration
+            await self._async_push_temperature_on_mode_switch()
             interval = self.calibration_interval
             await self._command(f"C,{interval}", ignore_error=True)
             await self._command("C,?", ignore_error=True)
@@ -403,6 +408,9 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         else:
             self._auto_return_task = None
             self._auto_return_deadline = 0.0
+
+        # Clear any stale pending temperature on mode switch
+        self._pending_temp_value = None
 
         await self._update_options({CONF_MODE: MODE_EXPLOITATION})
         await self._command("C,0", ignore_error=True)
@@ -793,18 +801,24 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         return value
 
     async def _async_push_temperature_coalesced(self) -> None:
-        """Push temperature on entity change, with rate limiting and command lock.
+        """Handle temperature entity change.
         
-        Called from _on_temp callback. Rate-limited to at most once per 30s,
-        and only if temperature changed >= 0.05°C. Uses the command lock to
-        avoid interfering with polls.
+        Called from _on_temp callback when the temperature entity state changes.
         
-        If within the rate limit window, defers the push to when the window ends
-        (instead of dropping the change).
+        In EXPLOITATION mode: no-op. The poll reads the current thermometer
+        value at poll time and applies the dead band there. This avoids stale
+        pending values and keeps temperature push inside the poll cycle.
+        
+        In CALIBRATION mode: push immediately or defer (rate-limited to 30s,
+        delta >= 0.05°C), since there's no polling to piggyback on.
         """
         if not self.profile.supports_temperature:
             return
         if self.persisted_sleep:
+            return
+        
+        # In exploitation mode, do nothing - poll will read current value
+        if self.mode == MODE_EXPLOITATION:
             return
         
         value = self._get_temperature_value()
@@ -818,6 +832,7 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         ):
             return
         
+        # In calibration mode, push immediately or defer
         now = time.monotonic()
         time_since_last = now - self._last_temp_push_at
         
@@ -867,7 +882,31 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
             await self._command(f"T,{value:.2f}", ignore_error=True)
             self._last_pushed_t = value
             self._last_temp_push_at = time.monotonic()
+            self._pending_temp_value = None  # Clear any stale pending
             await self._command("T,?", ignore_error=True)
+
+    async def _async_push_temperature_on_mode_switch(self) -> None:
+        """Push current temperature immediately when switching to calibration mode.
+        
+        Called from async_set_mode when entering calibration. Pushes the current
+        thermometer value (T,x then T,?) if compensation is configured and not asleep.
+        """
+        if not self.profile.supports_temperature:
+            return
+        if self.persisted_sleep:
+            return
+        entity_id = self.entry.options.get(CONF_TEMPERATURE_ENTITY)
+        if not entity_id:
+            return
+        value = self._get_temperature_value()
+        if value is None:
+            return
+        await self._command(f"T,{value:.2f}", ignore_error=True)
+        self._last_pushed_t = value
+        self._last_temp_push_at = time.monotonic()
+        self._pending_temp_value = None
+        await self._command("T,?", ignore_error=True)
+        _LOGGER.info("Temperature %.2f°C pushed on calibration mode switch", value)
 
     async def _async_push_temperature(self, *, hold_stream: bool = True) -> None:
         """Push temperature compensation value to the probe.
@@ -875,11 +914,16 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
         Args:
             hold_stream: If True, pause continuous mode during push. In exploitation
                 mode, this should be False since we're polling, not streaming.
+        
+        Always reads the current thermometer value and applies the dead band
+        against _last_pushed_t. This avoids stale pending values.
         """
         if not self.profile.supports_temperature:
             return
         if self.persisted_sleep:
             return
+        
+        # Always read current temperature (no pending logic - avoids stale values)
         value = self._get_temperature_value()
         if value is None:
             return
@@ -893,11 +937,13 @@ class EzoCoordinator(DataUpdateCoordinator[EzoDeviceState]):
                 await self._command(f"T,{value:.2f}", ignore_error=True)
                 self._last_pushed_t = value
                 self._last_temp_push_at = time.monotonic()
+                self._pending_temp_value = None  # Clear any stale pending
                 await self._command("T,?", ignore_error=True)
         else:
             await self._command(f"T,{value:.2f}", ignore_error=True)
             self._last_pushed_t = value
             self._last_temp_push_at = time.monotonic()
+            self._pending_temp_value = None  # Clear any stale pending
             await self._command("T,?", ignore_error=True)
 
     async def _initialize_device(self) -> None:
